@@ -4,6 +4,7 @@ import threading
 import yt_dlp
 import os
 import tkinter as tk
+import sys
 
 ctk.set_appearance_mode("dark")  # "dark" or "light"
 ctk.set_default_color_theme("blue")  # "blue", "green", "dark-blue"
@@ -200,4 +201,5 @@ class VideoDownloaderApp:
 if __name__ == '__main__':
     root = ctk.CTk()
     app = VideoDownloaderApp(root)
-    root.mainloop() 
+    root.mainloop()
+    sys.exit(0) 
