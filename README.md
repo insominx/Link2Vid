@@ -31,5 +31,23 @@ pip install -r requirements.txt
 5. Choose a download folder.
 6. Click **Download Selected** to start downloading.
 
+### Notes for X/Twitter downloads
+- Some X/Twitter videos require authentication. The app supports two cookie methods:
+  - Browser cookies (automatic): On Windows, Edge is used by default. You can set `cookies_browser` in `developer.json` to `edge`, `chrome`, or `firefox`.
+  - cookies.txt (manual): Click "Select cookies.txt" and choose an exported cookie file for `twitter.com`/`x.com`.
+- If browser cookies cannot be decrypted (DPAPI error), the app will prompt you to provide a `cookies.txt`.
+- How to export cookies.txt: Use an extension like "Get cookies.txt" in your browser to export cookies for `twitter.com`/`x.com`.
+
+### Notes for X/Twitter downloads
+- Some X/Twitter videos require authentication. The app retries with browser cookies for `x.com` / `twitter.com` URLs.
+- On Windows the default browser used is Edge. To change this, set `cookies_browser` in `developer.json` to one of: `edge`, `chrome`, or `firefox`.
+- Example `developer.json` snippet:
+  ```json
+  {
+    "use_defaults": true,
+    "cookies_browser": "edge"
+  }
+  ```
+
 ## License
 This project is licensed under the MIT License. See [LICENSE.md](LICENSE.md) for details.
