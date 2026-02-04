@@ -74,10 +74,13 @@ class VideoFetcher:
 
     def _needs_cookies(self, url: str, exc: Exception) -> bool:
         lowered = url.lower()
-        if "twitter.com" not in lowered and "x.com" not in lowered:
+        is_x = "twitter.com" in lowered or "x.com" in lowered
+        is_youtube = any(token in lowered for token in ("youtube.com", "youtu.be", "youtube-nocookie.com"))
+        if not (is_x or is_youtube):
             return False
         message = str(exc).lower()
         signals = (
+            "account",
             "dpapi",
             "cookie",
             "cookies",
@@ -89,5 +92,7 @@ class VideoFetcher:
             "403",
             "forbidden",
             "bot",
+            "verify",
+            "verification",
         )
         return any(token in message for token in signals)

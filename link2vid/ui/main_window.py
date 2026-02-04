@@ -18,6 +18,8 @@ from ..core import (
     NeedsCookies,
     NeedsSelenium,
     VideoFetcher,
+    build_diagnostics,
+    classify_error,
     download_with_ffmpeg,
     get_format_options,
     get_yt_dlp_version,
@@ -57,16 +59,19 @@ class VideoDownloaderApp:
         self.card_entries = {}
         self.format_options = get_format_options()
         self.format_label_map = {opt["format"]: opt["label"] for opt in self.format_options}
+        self.format_label_map.setdefault("best", "Best (single file)")
         self.dev_defaults = self.load_dev_defaults()
         self.main_thread_id = threading.get_ident()
         self.ui_queue = queue.Queue()
         self.log_history = []
         self.log_max = 200
         self.last_error = None
+        self.last_error_reason = None
         self.last_selected_format = None
         self.last_selected_label = None
         self.last_selected_title = None
         self.last_url = None
+        self.js_runtime_dialog_shown = False
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.fetch_future = None
         self.is_fetching = False
@@ -221,6 +226,20 @@ class VideoDownloaderApp:
     def ui_confirm(self, title: str, message: str) -> bool:
         return bool(self.run_on_ui_thread(lambda: messagebox.askyesno(title, message)))
 
+    def ui_ffmpeg_fallback(self, fmt_label: str) -> str:
+        message = (
+            f"ffmpeg is required to merge audio/video for '{fmt_label}'.\n\n"
+            "Yes: Switch to 'Best' (single file, most compatible)\n"
+            "No: Continue anyway (may fail or be video-only)\n"
+            "Cancel: Abort download."
+        )
+        result = self.run_on_ui_thread(lambda: messagebox.askyesnocancel("ffmpeg missing", message))
+        if result is None:
+            return "cancel"
+        if result:
+            return "fallback"
+        return "continue"
+
     def ui_warn(self, title: str, message: str) -> None:
         self.run_on_ui_thread(lambda: messagebox.showwarning(title, message))
 
@@ -293,25 +312,32 @@ class VideoDownloaderApp:
 
     def format_error(self, stage, err):
         err_text = str(err) or "Unknown error"
-        hint = self.error_hint(err_text)
-        return f"[{stage}] {type(err).__name__}: {err_text}{hint}"
+        reason, hint = classify_error(err_text)
+        self.last_error_reason = reason
+        reason_text = f" (Reason: {reason})" if reason else ""
+        return f"[{stage}] {type(err).__name__}: {err_text}{reason_text}{hint}"
 
     def error_hint(self, err_text):
-        msg = err_text.lower()
-        if any(k in msg for k in ["signature", "cipher", "extractor", "unable to extract"]):
-            return " (Hint: try updating yt-dlp.)"
-        if "ffmpeg" in msg:
-            return " (Hint: check ffmpeg is installed and on PATH.)"
-        if "javascript runtime" in msg or "js runtime" in msg:
-            return " (Hint: install deno or node and configure yt-dlp JS runtime.)"
-        if any(k in msg for k in ["403", "forbidden", "bot", "sign in", "age", "cookie", "consent"]):
-            return " (Hint: try cookies.txt from your browser.)"
-        return ""
+        _reason, hint = classify_error(err_text)
+        return hint
 
     def log_error(self, stage, err):
         msg = self.format_error(stage, err)
         self.last_error = msg
         self.log(msg)
+        if self.last_error_reason == "js runtime":
+            self._warn_js_runtime()
+
+    def _warn_js_runtime(self) -> None:
+        if self.js_runtime_dialog_shown:
+            return
+        self.js_runtime_dialog_shown = True
+        self.ui_warn(
+            "JavaScript runtime required",
+            "yt-dlp needs a JavaScript runtime (deno/node/bun) for some YouTube downloads.\n"
+            "Install one and ensure it is on PATH. Some cases also require the yt-dlp\n"
+            "challenge solver scripts (see the yt-dlp EJS wiki) before retrying.",
+        )
 
     def check_ffmpeg(self):
         self.ffmpeg_path = shutil.which("ffmpeg")
@@ -322,24 +348,37 @@ class VideoDownloaderApp:
     def check_js_runtime(self):
         runtimes = ["deno", "node", "bun"]
         self.js_runtimes = [rt for rt in runtimes if shutil.which(rt)]
+        self.js_runtime_available = bool(self.js_runtimes)
         if not self.js_runtimes:
-            self.log("No JavaScript runtime detected (deno/node/bun). Some YouTube formats may be missing.")
+            self.log(
+                "No JavaScript runtime detected (deno/node/bun). "
+                "YouTube downloads may fail without one."
+            )
 
     def copy_diagnostics(self):
         url = self.url_entry.get().strip()
-        js_runtime = ", ".join(self.js_runtimes) if getattr(self, "js_runtimes", None) else "not found"
-        lines = [
-            "Link2Vid Diagnostics",
-            f"URL: {url or 'n/a'}",
-            f"Selected title: {self.last_selected_title or 'n/a'}",
-            f"Selected format: {self.last_selected_format or 'n/a'}",
-            f"yt-dlp version: {get_yt_dlp_version()}",
-            f"ffmpeg: {self.ffmpeg_path or 'not found'}",
-            f"JS runtime: {js_runtime}",
-            f"Last error: {self.last_error or 'n/a'}",
-            "-- Recent log --",
-            *self.log_history[-20:]
-        ]
+        cookies_mode = getattr(self.download_manager, "last_cookies_mode", "none") or "none"
+        cookies_browser = getattr(self.download_manager, "last_cookies_browser", None) or "n/a"
+        js_runtime_used = getattr(self.download_manager, "last_js_runtime", None) or "n/a"
+        js_runtime_path = getattr(self.download_manager, "last_js_runtime_path", None) or "n/a"
+        remote_components = getattr(self.download_manager, "last_remote_components", None) or []
+        js_runtime = ", ".join(self.js_runtimes) if getattr(self, "js_runtimes", None) else None
+        lines = build_diagnostics(
+            url=url,
+            selected_title=self.last_selected_title,
+            selected_format=self.last_selected_format,
+            yt_dlp_version=get_yt_dlp_version(),
+            ffmpeg_path=self.ffmpeg_path,
+            js_runtime=js_runtime,
+            js_runtime_used=js_runtime_used,
+            js_runtime_path=js_runtime_path,
+            remote_components=remote_components,
+            cookies_mode=cookies_mode,
+            cookies_browser=cookies_browser,
+            last_error=self.last_error,
+            last_error_reason=self.last_error_reason,
+            log_history=self.log_history,
+        )
         self.root.clipboard_clear()
         self.root.clipboard_append("\n".join(lines))
         self.log("Diagnostics copied to clipboard.")
@@ -389,10 +428,14 @@ class VideoDownloaderApp:
 
             outcome = self.fetcher.fetch(url, username, password)
             if isinstance(outcome, NeedsCookies):
-                self.log_error("yt-dlp", outcome.error)
+                error_to_log = outcome.error
+                if isinstance(outcome.error, CookiesRequiredError) and outcome.error.original:
+                    error_to_log = outcome.error.original
+                self.log_error("yt-dlp", error_to_log)
                 if self.ui_confirm(
                     "Cookies required",
-                    "Browser cookies unavailable. Select a cookies.txt file to retry?",
+                    "This video may require cookies (age/consent/bot checks).\n"
+                    "Select a cookies.txt file to retry?",
                 ):
                     self.ui_select_cookies()
                     if self.cookies_path:
@@ -710,12 +753,19 @@ class VideoDownloaderApp:
         url = entry.get('webpage_url', self.url_entry.get().strip())
         fmt_id = format_id or self.format_options[0]["format"]
         fmt_label = self.format_label_map.get(fmt_id, fmt_id)
+        if not self.ffmpeg_available and '+' in fmt_id:
+            choice = self.ui_ffmpeg_fallback(fmt_label)
+            if choice == "cancel":
+                return
+            if choice == "fallback":
+                fmt_id = "best"
+                fmt_label = self.format_label_map.get(fmt_id, "Best (single file)")
+                self.log("ffmpeg missing: switching to Best (single file) for compatibility.")
+            else:
+                self.log("ffmpeg missing: proceeding without merge support (may fail or be video-only).")
         self.last_selected_format = fmt_id
         self.last_selected_label = fmt_label
         self.last_selected_title = entry.get('title', 'Video')
-        if not self.ffmpeg_available and '+' in fmt_id:
-            if not self.ui_confirm('ffmpeg missing', 'ffmpeg is required to merge audio/video. Continue anyway?'):
-                return
         self.set_progress(0)
         self.queue_card_status(card, f"Downloading ({fmt_label})", state="downloading")
         self.queue_card_progress(card, 0)
@@ -749,7 +799,8 @@ class VideoDownloaderApp:
             self.log_error("Download", exc.original or exc)
             if self.ui_confirm(
                 "Cookies required",
-                "Browser cookies unavailable. Select a cookies.txt file to retry?",
+                "This video may require cookies (age/consent/bot checks).\n"
+                "Select a cookies.txt file to retry?",
             ):
                 self.ui_select_cookies()
                 if not self.cookies_path:
@@ -764,6 +815,27 @@ class VideoDownloaderApp:
             else:
                 self.log("Cookies selection declined.")
                 ok = False
+        if not ok and self.last_error_reason == "format unavailable" and format_id != "best":
+            if self.ui_confirm(
+                "Format unavailable",
+                "The selected format is not available for this video.\n"
+                "Retry with Best (single file)?",
+            ):
+                fallback_id = "best"
+                fallback_label = self.format_label_map.get(fallback_id, "Best (single file)")
+                self.log(f"Retrying download with {fallback_label} due to unavailable format.")
+                self.last_selected_format = fallback_id
+                self.last_selected_label = fallback_label
+                if card:
+                    self.set_progress(0)
+                    self.queue_card_progress(card, 0)
+                    self.queue_card_status(card, f"Retrying ({fallback_label})", state="downloading")
+                try:
+                    ok = self.download_manager.download(url, fallback_id, outtmpl, progress_hook=hook)
+                except CookiesRequiredError as retry_exc:
+                    self.log_error("Download", retry_exc.original or retry_exc)
+                    ok = False
+                fmt_label = fallback_label
         if not ok and card:
             label = fmt_label or format_id
             self.queue_card_status(card, f"Failed ({label})", state="failed")
