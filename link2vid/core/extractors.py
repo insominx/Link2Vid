@@ -38,10 +38,27 @@ def scan_direct_m3u8(page_url: str, log: LogFn | None = None) -> HlsScanResult |
         }
         html = sess.get(page_url, headers=headers, timeout=15).text
 
-        iframe = re.search(r"<iframe[^>]+src=\"([^\"]+blazestreaming[^\"]+)\"", html, re.I)
+        iframe = re.search(r"<iframe[^>]+src=[\"']([^\"']+blazestreaming[^\"']+)[\"']", html, re.I)
         if iframe:
             iframe_url = urllib.parse.urljoin(page_url, iframe.group(1))
             html = sess.get(iframe_url, headers=headers, timeout=15).text
+            
+            parsed_url = urllib.parse.urlparse(iframe_url)
+            qs = urllib.parse.parse_qs(parsed_url.query)
+            video_id = qs.get("id", [""])[0]
+
+            script_matches = re.findall(r"<script[^>]+src=[\"']([^\"']+\.js)[\"']", html, re.I)
+            for script_src in script_matches:
+                try:
+                    script_url = urllib.parse.urljoin(iframe_url, script_src)
+                    script_js = sess.get(script_url, headers=headers, timeout=15).text
+                    html += "\n" + script_js
+                except Exception:
+                    pass
+
+            if video_id:
+                html = re.sub(r"'\s*\+\s*videoId\s*\+\s*'", video_id, html)
+                html = re.sub(r"\"\s*\+\s*videoId\s*\+\s*\"", video_id, html)
 
         match = re.search(r"https?://[^\"']+\.m3u8", html)
         if not match:
@@ -59,7 +76,7 @@ def scan_direct_m3u8(page_url: str, log: LogFn | None = None) -> HlsScanResult |
                 bandwidth = variant.stream_info.bandwidth
                 bandwidth_kbps = bandwidth // 1000 if bandwidth else None
                 resolution = variant.stream_info.resolution
-                logger(f" • {bandwidth_kbps} kbps  {resolution}  →  {variant.uri}")
+                logger(f" • {bandwidth_kbps} kbps  {resolution}  ->  {variant.uri}")
                 variants.append(
                     HlsVariant(
                         bandwidth_kbps=bandwidth_kbps,

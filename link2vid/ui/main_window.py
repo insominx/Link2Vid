@@ -461,9 +461,9 @@ class VideoDownloaderApp:
 
             if isinstance(outcome, DirectHlsFound):
                 if outcome.error:
-                    self.log_error("yt-dlp", outcome.error)
+                    self.log("[Fallback] yt-dlp native extraction failed; using direct HLS fallback.")
                 self._handle_direct_hls_result(outcome.result)
-                self.ui_queue.put(("results_state", "Direct HLS path used → see log"))
+                self.ui_queue.put(("results_state", "Direct HLS path used -> see log"))
                 return
 
             if isinstance(outcome, NeedsSelenium):
@@ -529,10 +529,18 @@ class VideoDownloaderApp:
             self.ui_warn(missing_folder_title, missing_folder_message)
             return False
         outfile = os.path.join(folder, outfile_name)
-        self.log(f"Starting ffmpeg → {outfile}")
+        self.log(f"Starting ffmpeg -> {outfile}")
+        
+        def run_ffmpeg():
+            try:
+                download_with_ffmpeg(playlist_url, outfile, headers or {})
+                self.log(f"ffmpeg download complete: {outfile}")
+                self.ui_warn("Download Complete", f"Successfully downloaded: {outfile_name}")
+            except Exception as e:
+                self.log_error("ffmpeg", e)
+
         threading.Thread(
-            target=download_with_ffmpeg,
-            args=(playlist_url, outfile, headers or {}),
+            target=run_ffmpeg,
             daemon=True,
         ).start()
         return True
