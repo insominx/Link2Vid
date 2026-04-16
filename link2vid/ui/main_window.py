@@ -13,6 +13,7 @@ from ..core import (
     CookiesRequiredError,
     DirectHlsFound,
     DownloadManager,
+    NoTranscriptAvailableError,
     FetchError,
     FetchResults,
     NeedsCookies,
@@ -20,6 +21,7 @@ from ..core import (
     VideoFetcher,
     build_diagnostics,
     classify_error,
+    get_error_guidance,
     download_with_ffmpeg,
     get_format_options,
     get_yt_dlp_version,
@@ -67,11 +69,14 @@ class VideoDownloaderApp:
         self.log_max = 200
         self.last_error = None
         self.last_error_reason = None
+        self.last_action_kind = None
         self.last_selected_format = None
         self.last_selected_label = None
         self.last_selected_title = None
+        self.last_transcript_source = None
+        self.last_transcript_languages = []
         self.last_url = None
-        self.js_runtime_dialog_shown = False
+        self.shown_error_guidance = set()
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.fetch_future = None
         self.is_fetching = False
@@ -89,6 +94,7 @@ class VideoDownloaderApp:
         }
         self.placeholder_cache = {}
         self.placeholder_font = None
+        self.busy_cards = set()
         self.output_path = self.get_default_output_path()
         self.cookies_path = None
         self.ydl_logger = YtDlpLogger(self)
@@ -243,6 +249,16 @@ class VideoDownloaderApp:
     def ui_warn(self, title: str, message: str) -> None:
         self.run_on_ui_thread(lambda: messagebox.showwarning(title, message))
 
+    def ui_offer_copy_diagnostics(self) -> bool:
+        return bool(
+            self.run_on_ui_thread(
+                lambda: messagebox.askyesno(
+                    "Copy Diagnostics",
+                    "Copy Link2Vid diagnostics to the clipboard now?",
+                )
+            )
+        )
+
     def ui_select_cookies(self) -> None:
         self.run_on_ui_thread(self.browse_cookies)
 
@@ -271,6 +287,9 @@ class VideoDownloaderApp:
                 elif action == "card_progress":
                     card, value = payload
                     card.set_progress(value)
+                elif action == "card_busy":
+                    card, busy = payload
+                    self._set_card_busy(card, busy)
                 elif action == "fetch_done":
                     self.is_fetching = False
                     self.update_button_states()
@@ -310,6 +329,21 @@ class VideoDownloaderApp:
             return
         card.set_progress(value)
 
+    def _set_card_busy(self, card, busy: bool):
+        if not card or not card.winfo_exists():
+            return
+        if busy:
+            self.busy_cards.add(card)
+        else:
+            self.busy_cards.discard(card)
+        card.set_actions_enabled(bool(self.output_path) and card not in self.busy_cards)
+
+    def queue_card_busy(self, card, busy: bool):
+        if threading.get_ident() != self.main_thread_id:
+            self.ui_queue.put(("card_busy", (card, busy)))
+            return
+        self._set_card_busy(card, busy)
+
     def format_error(self, stage, err):
         err_text = str(err) or "Unknown error"
         reason, hint = classify_error(err_text)
@@ -325,19 +359,19 @@ class VideoDownloaderApp:
         msg = self.format_error(stage, err)
         self.last_error = msg
         self.log(msg)
-        if self.last_error_reason == "js runtime":
-            self._warn_js_runtime()
+        self._warn_for_error(err)
 
-    def _warn_js_runtime(self) -> None:
-        if self.js_runtime_dialog_shown:
+    def _warn_for_error(self, err: Exception) -> None:
+        guidance = get_error_guidance(str(err) or "")
+        if not guidance:
             return
-        self.js_runtime_dialog_shown = True
-        self.ui_warn(
-            "JavaScript runtime required",
-            "yt-dlp needs a JavaScript runtime (deno/node/bun) for some YouTube downloads.\n"
-            "Install one and ensure it is on PATH. Some cases also require the yt-dlp\n"
-            "challenge solver scripts (see the yt-dlp EJS wiki) before retrying.",
-        )
+        key, title, message = guidance
+        if key in self.shown_error_guidance:
+            return
+        self.shown_error_guidance.add(key)
+        self.ui_warn(title, message)
+        if self.ui_offer_copy_diagnostics():
+            self.run_on_ui_thread(self.copy_diagnostics)
 
     def check_ffmpeg(self):
         self.ffmpeg_path = shutil.which("ffmpeg")
@@ -365,8 +399,11 @@ class VideoDownloaderApp:
         js_runtime = ", ".join(self.js_runtimes) if getattr(self, "js_runtimes", None) else None
         lines = build_diagnostics(
             url=url,
+            action_kind=self.last_action_kind,
             selected_title=self.last_selected_title,
             selected_format=self.last_selected_format,
+            transcript_source=self.last_transcript_source,
+            transcript_languages=self.last_transcript_languages,
             yt_dlp_version=get_yt_dlp_version(),
             ffmpeg_path=self.ffmpeg_path,
             js_runtime=js_runtime,
@@ -550,6 +587,7 @@ class VideoDownloaderApp:
             card.destroy()
         self.cards = []
         self.card_entries = {}
+        self.busy_cards.clear()
         self.rendered_count = 0
         if self.load_more_button.winfo_manager():
             self.load_more_button.pack_forget()
@@ -615,6 +653,7 @@ class VideoDownloaderApp:
                 metadata=metadata,
                 format_options=self.format_options,
                 on_download=self.handle_card_download,
+                on_transcript=self.handle_card_transcript,
             )
             card.pack(fill="x", padx=8, pady=8)
             self.cards.append(card)
@@ -746,9 +785,8 @@ class VideoDownloaderApp:
             self.footer.set_cookies_path(path)
 
     def update_card_buttons(self, has_folder: bool):
-        state = "normal" if has_folder else "disabled"
         for card in self.cards:
-            card.download_button.configure(state=state)
+            card.set_actions_enabled(has_folder and card not in self.busy_cards)
 
     def handle_card_download(self, card, format_id):
         entry = self.card_entries.get(card)
@@ -771,10 +809,14 @@ class VideoDownloaderApp:
                 self.log("ffmpeg missing: switching to Best (single file) for compatibility.")
             else:
                 self.log("ffmpeg missing: proceeding without merge support (may fail or be video-only).")
+        self.last_action_kind = "media"
         self.last_selected_format = fmt_id
         self.last_selected_label = fmt_label
         self.last_selected_title = entry.get('title', 'Video')
+        self.last_transcript_source = None
+        self.last_transcript_languages = []
         self.set_progress(0)
+        self.queue_card_busy(card, True)
         self.queue_card_status(card, f"Downloading ({fmt_label})", state="downloading")
         self.queue_card_progress(card, 0)
         self.log(f"Starting download: {entry.get('title', 'Video')} ({fmt_label})")
@@ -784,8 +826,36 @@ class VideoDownloaderApp:
             daemon=True,
         ).start()
 
+    def handle_card_transcript(self, card):
+        entry = self.card_entries.get(card)
+        if not entry:
+            return
+        folder = self.output_path
+        if not folder:
+            self.ui_warn('Folder Error', 'Select a folder first.')
+            return
+        url = entry.get('webpage_url', self.url_entry.get().strip())
+        title = entry.get('title', 'Video')
+        self.last_action_kind = "transcript"
+        self.last_selected_format = None
+        self.last_selected_label = None
+        self.last_selected_title = title
+        self.last_transcript_source = None
+        self.last_transcript_languages = []
+        self.set_progress(0)
+        self.queue_card_busy(card, True)
+        self.queue_card_status(card, "Downloading transcript", state="downloading")
+        self.queue_card_progress(card, 0)
+        self.log(f"Starting transcript download: {title}")
+        threading.Thread(
+            target=self.download_transcript,
+            args=(url, folder, card),
+            daemon=True,
+        ).start()
+
     def download_video(self, url, format_id, out_path, card=None, fmt_label=None):
         finished_logged = False
+
         def hook(d):
             nonlocal finished_logged
             if d['status'] == 'downloading':
@@ -800,53 +870,122 @@ class VideoDownloaderApp:
                 self.log('Download complete!')
                 if card:
                     self.queue_card_status(card, "Complete", state="complete")
+
         outtmpl = os.path.join(out_path, '%(title)s.%(ext)s')
         try:
-            ok = self.download_manager.download(url, format_id, outtmpl, progress_hook=hook)
+            try:
+                ok = self.download_manager.download(url, format_id, outtmpl, progress_hook=hook)
+            except CookiesRequiredError as exc:
+                self.log_error("Download", exc.original or exc)
+                if self.ui_confirm(
+                    "Cookies required",
+                    "This video may require cookies (age/consent/bot checks).\n"
+                    "Select a cookies.txt file to retry?",
+                ):
+                    self.ui_select_cookies()
+                    if not self.cookies_path:
+                        self.log("No cookies.txt selected.")
+                        ok = False
+                    else:
+                        try:
+                            ok = self.download_manager.download(url, format_id, outtmpl, progress_hook=hook)
+                        except CookiesRequiredError as retry_exc:
+                            self.log_error("Download", retry_exc.original or retry_exc)
+                            ok = False
+                else:
+                    self.log("Cookies selection declined.")
+                    ok = False
+            if not ok and self.last_error_reason == "format unavailable" and format_id != "best":
+                if self.ui_confirm(
+                    "Format unavailable",
+                    "The selected format is not available for this video.\n"
+                    "Retry with Best (single file)?",
+                ):
+                    fallback_id = "best"
+                    fallback_label = self.format_label_map.get(fallback_id, "Best (single file)")
+                    self.log(f"Retrying download with {fallback_label} due to unavailable format.")
+                    self.last_selected_format = fallback_id
+                    self.last_selected_label = fallback_label
+                    if card:
+                        self.set_progress(0)
+                        self.queue_card_progress(card, 0)
+                        self.queue_card_status(card, f"Retrying ({fallback_label})", state="downloading")
+                    try:
+                        ok = self.download_manager.download(url, fallback_id, outtmpl, progress_hook=hook)
+                    except CookiesRequiredError as retry_exc:
+                        self.log_error("Download", retry_exc.original or retry_exc)
+                        ok = False
+                    fmt_label = fallback_label
+            if not ok and card:
+                label = fmt_label or format_id
+                self.queue_card_status(card, f"Failed ({label})", state="failed")
+        finally:
+            if card:
+                self.queue_card_busy(card, False)
+
+    def download_transcript(self, url, out_path, card=None):
+        outtmpl = os.path.join(out_path, '%(title)s.transcript.%(ext)s')
+
+        def mark_success(result):
+            self.last_transcript_source = result.source
+            self.last_transcript_languages = list(result.languages)
+            self.set_progress(1)
+            if card:
+                self.queue_card_progress(card, 1)
+                self.queue_card_status(card, f"Transcript saved ({result.source})", state="complete")
+            languages = ", ".join(result.languages[:5])
+            if len(result.languages) > 5:
+                languages += ", ..."
+            detail = f" [{languages}]" if languages else ""
+            self.log(f"Transcript download complete ({result.source}){detail}")
+
+        try:
+            result = self.download_manager.download_transcript(url, outtmpl)
+            mark_success(result)
         except CookiesRequiredError as exc:
-            self.log_error("Download", exc.original or exc)
+            self.log_error("Transcript", exc.original or exc)
             if self.ui_confirm(
                 "Cookies required",
-                "This video may require cookies (age/consent/bot checks).\n"
+                "This transcript may require cookies (age/consent/bot checks).\n"
                 "Select a cookies.txt file to retry?",
             ):
                 self.ui_select_cookies()
                 if not self.cookies_path:
                     self.log("No cookies.txt selected.")
-                    ok = False
+                    if card:
+                        self.queue_card_status(card, "Transcript failed", state="failed")
                 else:
                     try:
-                        ok = self.download_manager.download(url, format_id, outtmpl, progress_hook=hook)
+                        result = self.download_manager.download_transcript(url, outtmpl)
+                        mark_success(result)
+                        return
                     except CookiesRequiredError as retry_exc:
-                        self.log_error("Download", retry_exc.original or retry_exc)
-                        ok = False
+                        self.log_error("Transcript", retry_exc.original or retry_exc)
+                        if card:
+                            self.queue_card_status(card, "Transcript failed", state="failed")
+                    except NoTranscriptAvailableError as retry_exc:
+                        self.log_error("Transcript", retry_exc)
+                        if card:
+                            self.queue_card_status(card, "Transcript unavailable", state="failed")
+                    except Exception as retry_exc:
+                        self.log_error("Transcript", retry_exc)
+                        if card:
+                            self.queue_card_status(card, "Transcript failed", state="failed")
             else:
                 self.log("Cookies selection declined.")
-                ok = False
-        if not ok and self.last_error_reason == "format unavailable" and format_id != "best":
-            if self.ui_confirm(
-                "Format unavailable",
-                "The selected format is not available for this video.\n"
-                "Retry with Best (single file)?",
-            ):
-                fallback_id = "best"
-                fallback_label = self.format_label_map.get(fallback_id, "Best (single file)")
-                self.log(f"Retrying download with {fallback_label} due to unavailable format.")
-                self.last_selected_format = fallback_id
-                self.last_selected_label = fallback_label
                 if card:
-                    self.set_progress(0)
-                    self.queue_card_progress(card, 0)
-                    self.queue_card_status(card, f"Retrying ({fallback_label})", state="downloading")
-                try:
-                    ok = self.download_manager.download(url, fallback_id, outtmpl, progress_hook=hook)
-                except CookiesRequiredError as retry_exc:
-                    self.log_error("Download", retry_exc.original or retry_exc)
-                    ok = False
-                fmt_label = fallback_label
-        if not ok and card:
-            label = fmt_label or format_id
-            self.queue_card_status(card, f"Failed ({label})", state="failed")
+                    self.queue_card_status(card, "Transcript failed", state="failed")
+        except NoTranscriptAvailableError as exc:
+            self.log_error("Transcript", exc)
+            if card:
+                self.queue_card_status(card, "Transcript unavailable", state="failed")
+        except Exception as exc:
+            self.log_error("Transcript", exc)
+            if card:
+                self.queue_card_status(card, "Transcript failed", state="failed")
+        finally:
+            if card:
+                self.queue_card_busy(card, False)
 
     def on_close(self):
         try:

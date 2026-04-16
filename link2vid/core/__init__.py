@@ -2,8 +2,8 @@
 
 from .downloader import DownloadManager
 from .diagnostics import build_diagnostics
-from .errors import CookiesRequiredError
-from .error_classification import classify_error
+from .errors import CookiesRequiredError, NoTranscriptAvailableError
+from .error_classification import classify_error, get_error_guidance
 from .extractors import extract_linkedin_videos, scan_direct_m3u8
 from .fetcher import (
     DirectHlsFound,
@@ -25,8 +25,10 @@ from .selenium_fallback import selenium_fetch_m3u8
 __all__ = [
     "DownloadManager",
     "CookiesRequiredError",
+    "NoTranscriptAvailableError",
     "build_diagnostics",
     "classify_error",
+    "get_error_guidance",
     "download_with_ffmpeg",
     "extract_linkedin_videos",
     "get_format_options",

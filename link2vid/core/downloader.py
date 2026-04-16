@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable
 
-from .errors import CookiesRequiredError
+from .errors import CookiesRequiredError, NoTranscriptAvailableError
 import sys
 import subprocess
 import re
 import shutil
 import yt_dlp
+
+
+@dataclass
+class TranscriptDownloadResult:
+    source: str
+    languages: list[str]
 
 
 class DownloadManager:
@@ -205,6 +212,69 @@ class DownloadManager:
             return self._is_cookie_error(err)
         return False
 
+    def _available_transcript_languages(self, tracks: dict | None) -> list[str]:
+        if not isinstance(tracks, dict):
+            return []
+        languages: list[str] = []
+        for language, entries in tracks.items():
+            if language == "live_chat":
+                continue
+            if entries:
+                languages.append(str(language))
+        return sorted(languages)
+
+    def _pick_preferred_transcript_language(self, languages: list[str], info: dict | None = None) -> str:
+        if not languages:
+            raise NoTranscriptAvailableError("No transcript/subtitles available for this video.")
+
+        lowered = {language.lower(): language for language in languages}
+        if "en" in lowered:
+            return lowered["en"]
+
+        english_variants = [language for language in languages if language.lower().startswith("en-")]
+        if english_variants:
+            return sorted(english_variants)[0]
+
+        info = info or {}
+        original_language = str(info.get("language") or info.get("original_language") or "").strip().lower()
+        if original_language:
+            if original_language in lowered:
+                return lowered[original_language]
+            original_variants = [language for language in languages if language.lower().startswith(f"{original_language}-")]
+            if original_variants:
+                return sorted(original_variants)[0]
+
+        original_track_variants = [language for language in languages if "orig" in language.lower()]
+        if original_track_variants:
+            return sorted(original_track_variants)[0]
+
+        return languages[0]
+
+    def _transcript_download_config(self, info: dict) -> dict[str, object]:
+        subtitle_langs = self._available_transcript_languages(info.get("subtitles"))
+        if subtitle_langs:
+            selected = self._pick_preferred_transcript_language(subtitle_langs, info)
+            return {
+                "source": "subtitles",
+                "languages": [selected],
+                "available_languages": subtitle_langs,
+                "writesubtitles": True,
+                "writeautomaticsub": False,
+            }
+
+        automatic_langs = self._available_transcript_languages(info.get("automatic_captions"))
+        if automatic_langs:
+            selected = self._pick_preferred_transcript_language(automatic_langs, info)
+            return {
+                "source": "automatic captions",
+                "languages": [selected],
+                "available_languages": automatic_langs,
+                "writesubtitles": False,
+                "writeautomaticsub": True,
+            }
+
+        raise NoTranscriptAvailableError("No transcript/subtitles available for this video.")
+
     def get_video_info(self, url: str, username: str | None = None, password: str | None = None):
         self._reset_cookie_state()
         ydl_opts = {"quiet": True, "skip_download": True, "logger": self.ydl_logger}
@@ -291,3 +361,71 @@ class DownloadManager:
                 raise CookiesRequiredError(original=last_err) from first_err
             self.log_error("Download", first_err)
             return False
+
+    def download_transcript(self, url: str, out_path: str) -> TranscriptDownloadResult:
+        self._reset_cookie_state()
+        opts = {
+            "skip_download": True,
+            "outtmpl": out_path,
+            "quiet": True,
+            "logger": self.ydl_logger,
+        }
+        self._apply_cookies(opts)
+        self._apply_js_runtime_opts(opts)
+
+        def attempt(current_opts: dict) -> TranscriptDownloadResult:
+            with yt_dlp.YoutubeDL(current_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                config = self._transcript_download_config(info or {})
+
+            selected_languages = list(config["languages"])
+            available_languages = list(config.get("available_languages", selected_languages))
+            if available_languages:
+                selected_label = ", ".join(selected_languages)
+                available_label = ", ".join(available_languages)
+                self.log(
+                    f"[yt-dlp] Transcript selection: {config['source']} -> {selected_label} "
+                    f"(available: {available_label})"
+                )
+
+            download_opts = dict(current_opts)
+            download_opts.update(
+                {
+                    "writesubtitles": bool(config["writesubtitles"]),
+                    "writeautomaticsub": bool(config["writeautomaticsub"]),
+                    "subtitleslangs": list(config["languages"]),
+                }
+            )
+            with yt_dlp.YoutubeDL(download_opts) as ydl:
+                ydl.download([url])
+            return TranscriptDownloadResult(
+                source=str(config["source"]),
+                languages=list(config["languages"]),
+            )
+
+        try:
+            return attempt(opts)
+        except Exception as first_err:
+            if self._should_try_browser_cookies(url, first_err):
+                site_label = "X/Twitter" if self._is_x_url(url) else "YouTube"
+                last_err = first_err
+                candidates = self._browser_candidates()
+                self.log(f"[yt-dlp] Browser cookie candidates: {', '.join(candidates)}")
+                for browser in candidates:
+                    self.log(f"[yt-dlp] Transcript retry with cookies from browser ({browser}) for {site_label}…")
+                    try:
+                        retry_opts = dict(opts)
+                        retry_opts.pop("cookiefile", None)
+                        retry_opts["cookiesfrombrowser"] = (browser,)
+                        self._mark_browser_cookies(browser)
+                        return attempt(retry_opts)
+                    except Exception as retry_err:
+                        self.log(f"[yt-dlp] Browser cookies ({browser}) failed: {self._format_exception(retry_err)}")
+                        hint = self._cookie_failure_hint(retry_err)
+                        if hint:
+                            self.log(f"[yt-dlp] {hint}")
+                        last_err = retry_err
+                        continue
+                self.log("[yt-dlp] All browser cookie attempts failed; falling back to cookies.txt prompt.")
+                raise CookiesRequiredError(original=last_err) from first_err
+            raise
