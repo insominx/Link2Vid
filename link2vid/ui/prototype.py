@@ -29,7 +29,11 @@ def run() -> None:
 
     def handle_download(card: VideoCard, fmt: str) -> None:
         card.set_status(f"Queued ({fmt})")
-        log_drawer.append(f"Queued: {card.get_title()} [{fmt}]")
+        log_drawer.append(f"Queued media: {card.get_title()} [{fmt}]")
+
+    def handle_transcript(card: VideoCard) -> None:
+        card.set_status("Queued transcript")
+        log_drawer.append(f"Queued transcript: {card.get_title()}")
 
     format_options = [
         ("Best (A+V)", "bestvideo+bestaudio/best"),
@@ -59,6 +63,7 @@ def run() -> None:
             metadata=item["meta"],
             format_options=format_options,
             on_download=handle_download,
+            on_transcript=handle_transcript,
         )
         card.pack(fill="x", padx=8, pady=8)
 

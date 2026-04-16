@@ -7,6 +7,7 @@ Link2Vid is a desktop application for downloading videos from various platforms 
 - Modern, dark-themed GUI
 - Select and preview available video formats
 - Choose download directory
+- Download transcript/caption files without downloading video/audio media
 - Progress bar and log output
 
 ## Requirements
@@ -34,10 +35,10 @@ pip install -r requirements.txt
 4. Click **Fetch Videos** to load available videos and formats.
 5. Select a video from the list.
 6. Choose a download folder.
-7. Click **Download Selected** to start downloading.
+7. Click **Download** on a result card to save media, or **Transcript** to save transcript/caption files only.
 
 ### Notes for cookie-protected sites (X/Twitter, YouTube)
-- Some videos require authentication or consent. The app supports two cookie methods:
+- Some videos require authentication or consent. The app supports two cookie methods for both media and transcript retrieval:
   - Browser cookies (automatic): The app will try Edge/Chrome/Brave/Firefox in order. You can set `cookies_browser` in `developer.json` to prefer one (`edge`, `chrome`, `brave`, or `firefox`).
   - cookies.txt (manual): Click "Select cookies.txt" and choose an exported cookie file for the site.
 - If browser cookies cannot be decrypted (DPAPI error), the app will prompt you to provide a `cookies.txt`.

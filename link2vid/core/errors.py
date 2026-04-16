@@ -9,3 +9,7 @@ class CookiesRequiredError(RuntimeError):
     def __init__(self, message: str = "Cookies are required to access this content.", *, original: Exception | None = None) -> None:
         super().__init__(message)
         self.original = original
+
+
+class NoTranscriptAvailableError(RuntimeError):
+    """Raised when a video does not expose subtitles/captions that can be downloaded."""

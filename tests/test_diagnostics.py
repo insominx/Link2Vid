@@ -7,8 +7,11 @@ class TestDiagnostics(unittest.TestCase):
     def test_build_diagnostics_contains_required_fields(self):
         lines = build_diagnostics(
             url="https://example.com/video",
+            action_kind="transcript",
             selected_title="Example",
             selected_format="best",
+            transcript_source="subtitles",
+            transcript_languages=["en", "es"],
             yt_dlp_version="1.2.3",
             ffmpeg_path="C:\\ffmpeg.exe",
             js_runtime="node",
@@ -24,7 +27,10 @@ class TestDiagnostics(unittest.TestCase):
         output = "\n".join(lines)
         self.assertIn("Link2Vid Diagnostics", output)
         self.assertIn("URL: https://example.com/video", output)
+        self.assertIn("Action kind: transcript", output)
         self.assertIn("Selected format: best", output)
+        self.assertIn("Transcript source: subtitles", output)
+        self.assertIn("Transcript languages: en, es", output)
         self.assertIn("yt-dlp version: 1.2.3", output)
         self.assertIn("ffmpeg: C:\\ffmpeg.exe", output)
         self.assertIn("JS runtime: node", output)

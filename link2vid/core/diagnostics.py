@@ -8,8 +8,11 @@ from typing import Iterable
 def build_diagnostics(
     *,
     url: str | None,
+    action_kind: str | None,
     selected_title: str | None,
     selected_format: str | None,
+    transcript_source: str | None,
+    transcript_languages: Iterable[str] | None,
     yt_dlp_version: str,
     ffmpeg_path: str | None,
     js_runtime: str | None,
@@ -22,6 +25,9 @@ def build_diagnostics(
     last_error_reason: str | None,
     log_history: Iterable[str] | None,
 ) -> list[str]:
+    action_kind_value = action_kind or "n/a"
+    transcript_source_value = transcript_source or "n/a"
+    transcript_languages_value = ", ".join(transcript_languages or []) or "n/a"
     js_runtime_value = js_runtime or "not found"
     cookies_mode_value = cookies_mode or "none"
     cookies_browser_value = cookies_browser or "n/a"
@@ -33,8 +39,11 @@ def build_diagnostics(
     return [
         "Link2Vid Diagnostics",
         f"URL: {url or 'n/a'}",
+        f"Action kind: {action_kind_value}",
         f"Selected title: {selected_title or 'n/a'}",
         f"Selected format: {selected_format or 'n/a'}",
+        f"Transcript source: {transcript_source_value}",
+        f"Transcript languages: {transcript_languages_value}",
         f"yt-dlp version: {yt_dlp_version}",
         f"ffmpeg: {ffmpeg_path or 'not found'}",
         f"JS runtime: {js_runtime_value}",

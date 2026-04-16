@@ -8,6 +8,7 @@ import customtkinter as ctk
 
 FormatOption = tuple[str, str]
 OnDownload = Callable[["VideoCard", str], None]
+OnTranscript = Callable[["VideoCard"], None]
 
 STATUS_COLORS = {
     "ready": ("#6b7280", "#9ca3af"),
@@ -33,10 +34,12 @@ class VideoCard(ctk.CTkFrame):
         metadata: str = "",
         format_options: Sequence[object] | None = None,
         on_download: OnDownload | None = None,
+        on_transcript: OnTranscript | None = None,
         **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
         self.on_download = on_download
+        self.on_transcript = on_transcript
         self.title_text = title
         self.selected_format = ""
         self.status_state = "ready"
@@ -105,7 +108,17 @@ class VideoCard(ctk.CTkFrame):
         self.download_button = ctk.CTkButton(action_frame, text="Download", command=self._handle_download)
         self.download_button.grid(row=1, column=0, pady=(8, 0), sticky="ew")
 
+        self.transcript_button = ctk.CTkButton(
+            action_frame,
+            text="Transcript",
+            command=self._handle_transcript,
+            fg_color="#334155",
+            hover_color="#475569",
+        )
+        self.transcript_button.grid(row=2, column=0, pady=(8, 0), sticky="ew")
+
         self.set_status("Ready", state="ready")
+        self.set_actions_enabled(True)
 
     def _normalize_format_options(self, options: Sequence[object] | None) -> list[FormatOption]:
         if not options:
@@ -130,6 +143,16 @@ class VideoCard(ctk.CTkFrame):
     def _handle_download(self) -> None:
         if self.on_download:
             self.on_download(self, self.selected_format)
+
+    def _handle_transcript(self) -> None:
+        if self.on_transcript:
+            self.on_transcript(self)
+
+    def set_actions_enabled(self, enabled: bool) -> None:
+        download_state = "normal" if enabled and self.on_download else "disabled"
+        transcript_state = "normal" if enabled and self.on_transcript else "disabled"
+        self.download_button.configure(state=download_state)
+        self.transcript_button.configure(state=transcript_state)
 
     def set_title(self, title: str) -> None:
         self.title_text = title
