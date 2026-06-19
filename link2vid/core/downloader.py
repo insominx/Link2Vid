@@ -1,0 +1,514 @@
+"""Download/extraction logic extracted from the UI layer."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable
+
+from .errors import CookiesRequiredError, NoTranscriptAvailableError
+import sys
+import subprocess
+import re
+import shutil
+from urllib.parse import urlparse
+import yt_dlp
+
+
+@dataclass
+class TranscriptDownloadResult:
+    source: str
+    languages: list[str]
+
+
+@dataclass(frozen=True)
+class TranscriptTrack:
+    source: str
+    language: str
+    label: str
+
+
+class DownloadManager:
+    def __init__(
+        self,
+        *,
+        ydl_logger,
+        log: Callable[[str], None] | None = None,
+        log_error: Callable[[str, Exception], None] | None = None,
+        dev_defaults: dict | None = None,
+        get_cookies_path: Callable[[], str | None] | None = None,
+    ) -> None:
+        self.ydl_logger = ydl_logger
+        self.log = log or (lambda _msg: None)
+        self.log_error = log_error or (lambda _stage, _err: None)
+        self.dev_defaults = dev_defaults or {}
+        self.get_cookies_path = get_cookies_path or (lambda: None)
+        self.last_cookies_mode = "none"
+        self.last_cookies_browser = None
+        self.last_js_runtime = None
+        self.last_js_runtime_path = None
+        self.last_remote_components = []
+
+    def _browser_name(self) -> str:
+        browser = None
+        if self.dev_defaults:
+            browser = self.dev_defaults.get("cookies_browser")
+        if not browser:
+            browser = "edge" if sys.platform.startswith("win") else "chrome"
+        return browser
+
+    def _running_browsers(self) -> list[str]:
+        candidates: list[str] = []
+        output = ""
+        if sys.platform.startswith("win"):
+            try:
+                result = subprocess.run(["tasklist"], capture_output=True, text=True, check=False)
+                output = result.stdout.lower()
+            except Exception:
+                return []
+            process_map = {
+                "msedge.exe": "edge",
+                "brave.exe": "brave",
+                "chrome.exe": "chrome",
+                "firefox.exe": "firefox",
+            }
+        else:
+            try:
+                result = subprocess.run(["ps", "-A"], capture_output=True, text=True, check=False)
+                output = result.stdout.lower()
+            except Exception:
+                return []
+            process_map = {
+                "microsoft-edge": "edge",
+                "msedge": "edge",
+                "brave-browser": "brave",
+                "brave": "brave",
+                "chrome": "chrome",
+                "chromium": "chrome",
+                "firefox": "firefox",
+            }
+        for process, browser in process_map.items():
+            if process in output:
+                candidates.append(browser)
+        return candidates
+
+    def _reset_cookie_state(self) -> None:
+        self.last_cookies_mode = "none"
+        self.last_cookies_browser = None
+
+    def _apply_cookies(self, opts: dict) -> None:
+        cookies_path = self.get_cookies_path()
+        if cookies_path:
+            opts["cookiefile"] = cookies_path
+            self.last_cookies_mode = "cookies.txt"
+
+    def _mark_browser_cookies(self, browser: str) -> None:
+        self.last_cookies_mode = "browser"
+        self.last_cookies_browser = browser
+
+    def _is_cookie_error(self, err: Exception) -> bool:
+        message = str(err).lower()
+        signals = (
+            "account",
+            "cookie",
+            "cookies",
+            "consent",
+            "sign in",
+            "signin",
+            "login",
+            "age-restricted",
+            "age restricted",
+            "age verification",
+            "403",
+            "forbidden",
+            "bot",
+            "verify",
+            "verification",
+        )
+        return any(token in message for token in signals)
+
+    def _browser_candidates(self) -> list[str]:
+        ordered: list[str] = []
+        seen = set()
+
+        preferred = None
+        if self.dev_defaults:
+            preferred = self.dev_defaults.get("cookies_browser")
+        if preferred and preferred not in seen:
+            seen.add(preferred)
+            ordered.append(preferred)
+
+        for browser in self._running_browsers():
+            if browser not in seen:
+                seen.add(browser)
+                ordered.append(browser)
+
+        fallback = ["edge", "chrome", "brave", "firefox"]
+        for browser in fallback:
+            if browser not in seen:
+                seen.add(browser)
+                ordered.append(browser)
+
+        return ordered
+
+    def _select_js_runtime(self) -> tuple[str | None, str | None]:
+        candidates = [
+            ("deno", "deno"),
+            ("node", "node"),
+            ("bun", "bun"),
+            ("quickjs", "qjs"),
+        ]
+        for runtime, exe in candidates:
+            path = shutil.which(exe)
+            if path:
+                return runtime, path
+        return None, None
+
+    def _apply_js_runtime_opts(self, opts: dict) -> None:
+        runtime, path = self._select_js_runtime()
+        self.last_js_runtime = runtime
+        self.last_js_runtime_path = path
+        if runtime:
+            opts["js_runtimes"] = {runtime: {"path": path} if path else {}}
+            components = ["ejs:github"]
+            if runtime in ("deno", "bun"):
+                components.append("ejs:npm")
+            opts["remote_components"] = components
+            self.last_remote_components = components
+            self.log(f"[yt-dlp] JS runtime selected: {runtime} ({path})")
+            self.log(f"[yt-dlp] EJS remote components enabled: {', '.join(components)}")
+            try:
+                import yt_dlp_ejs
+                version = getattr(yt_dlp_ejs, "__version__", "unknown")
+                self.log(f"[yt-dlp] EJS package detected: yt-dlp-ejs {version}")
+            except Exception:
+                self.log("[yt-dlp] EJS package not detected; relying on remote components.")
+        else:
+            self.last_remote_components = []
+            self.log("[yt-dlp] No JS runtime found; EJS challenge solver will be unavailable.")
+
+    def _strip_ansi(self, text: str) -> str:
+        return re.sub(r"\x1b\[[0-9;]*m", "", text or "")
+
+    def _format_exception(self, err: Exception) -> str:
+        text = self._strip_ansi(str(err) or "")
+        if len(text) > 240:
+            text = text[:237] + "..."
+        if text:
+            return f"{type(err).__name__}: {text}"
+        return type(err).__name__
+
+    def _cookie_failure_hint(self, err: Exception) -> str | None:
+        msg = self._strip_ansi(str(err) or "").lower()
+        if "dpapi" in msg:
+            return "Hint: Windows DPAPI decrypt failed. Close the browser and retry, or use cookies.txt."
+        if "could not copy chrome cookie database" in msg:
+            return "Hint: Browser cookie database is locked. Fully close the browser (including background processes) and retry."
+        if "could not find firefox cookies database" in msg:
+            return "Hint: Firefox profile not found on this machine."
+        return None
+
+    def _should_try_browser_cookies(self, url: str, err: Exception) -> bool:
+        return self._is_cookie_error(err)
+
+    def _site_label(self, url: str) -> str:
+        parsed = urlparse(url)
+        return parsed.netloc or "this site"
+
+    def _available_transcript_languages(self, tracks: dict | None) -> list[str]:
+        if not isinstance(tracks, dict):
+            return []
+        languages: list[str] = []
+        for language, entries in tracks.items():
+            if language == "live_chat":
+                continue
+            if entries:
+                languages.append(str(language))
+        return sorted(languages)
+
+    def _transcript_track_label(self, source: str, language: str, entries: list | tuple | None) -> str:
+        name = ""
+        if entries:
+            first_entry = entries[0]
+            if isinstance(first_entry, dict):
+                name = str(first_entry.get("name") or "").strip()
+        base = f"{name} ({language})" if name else language
+        source_label = "Subtitles" if source == "subtitles" else "Auto"
+        return f"{base} - {source_label}"
+
+    def _transcript_tracks_for_source(
+        self,
+        source: str,
+        tracks: dict | None,
+    ) -> list[TranscriptTrack]:
+        if not isinstance(tracks, dict):
+            return []
+        result: list[TranscriptTrack] = []
+        for language in self._available_transcript_languages(tracks):
+            entries = tracks.get(language)
+            result.append(
+                TranscriptTrack(
+                    source=source,
+                    language=language,
+                    label=self._transcript_track_label(source, language, entries),
+                )
+            )
+        return sorted(result, key=lambda track: track.label.lower())
+
+    def transcript_tracks_from_info(self, info: dict | None) -> list[TranscriptTrack]:
+        info = info or {}
+        return [
+            *self._transcript_tracks_for_source("subtitles", info.get("subtitles")),
+            *self._transcript_tracks_for_source("automatic captions", info.get("automatic_captions")),
+        ]
+
+    def _pick_preferred_transcript_language(self, languages: list[str], info: dict | None = None) -> str:
+        if not languages:
+            raise NoTranscriptAvailableError("No transcript/subtitles available for this video.")
+
+        lowered = {language.lower(): language for language in languages}
+        if "en" in lowered:
+            return lowered["en"]
+
+        english_variants = [language for language in languages if language.lower().startswith("en-")]
+        if english_variants:
+            return sorted(english_variants)[0]
+
+        info = info or {}
+        original_language = str(info.get("language") or info.get("original_language") or "").strip().lower()
+        if original_language:
+            if original_language in lowered:
+                return lowered[original_language]
+            original_variants = [language for language in languages if language.lower().startswith(f"{original_language}-")]
+            if original_variants:
+                return sorted(original_variants)[0]
+
+        original_track_variants = [language for language in languages if "orig" in language.lower()]
+        if original_track_variants:
+            return sorted(original_track_variants)[0]
+
+        return languages[0]
+
+    def _config_for_selected_transcript_track(self, info: dict, selected_track: TranscriptTrack) -> dict[str, object]:
+        if selected_track.source == "subtitles":
+            subtitle_langs = self._available_transcript_languages(info.get("subtitles"))
+            if selected_track.language in subtitle_langs:
+                return {
+                    "source": "subtitles",
+                    "languages": [selected_track.language],
+                    "available_languages": subtitle_langs,
+                    "writesubtitles": True,
+                    "writeautomaticsub": False,
+                }
+        elif selected_track.source == "automatic captions":
+            automatic_langs = self._available_transcript_languages(info.get("automatic_captions"))
+            if selected_track.language in automatic_langs:
+                return {
+                    "source": "automatic captions",
+                    "languages": [selected_track.language],
+                    "available_languages": automatic_langs,
+                    "writesubtitles": False,
+                    "writeautomaticsub": True,
+                }
+        raise NoTranscriptAvailableError(
+            f"Selected transcript language is unavailable: {selected_track.label}"
+        )
+
+    def _transcript_download_config(
+        self,
+        info: dict,
+        selected_track: TranscriptTrack | None = None,
+    ) -> dict[str, object]:
+        if selected_track is not None:
+            return self._config_for_selected_transcript_track(info, selected_track)
+
+        subtitle_langs = self._available_transcript_languages(info.get("subtitles"))
+        if subtitle_langs:
+            selected = self._pick_preferred_transcript_language(subtitle_langs, info)
+            return {
+                "source": "subtitles",
+                "languages": [selected],
+                "available_languages": subtitle_langs,
+                "writesubtitles": True,
+                "writeautomaticsub": False,
+            }
+
+        automatic_langs = self._available_transcript_languages(info.get("automatic_captions"))
+        if automatic_langs:
+            selected = self._pick_preferred_transcript_language(automatic_langs, info)
+            return {
+                "source": "automatic captions",
+                "languages": [selected],
+                "available_languages": automatic_langs,
+                "writesubtitles": False,
+                "writeautomaticsub": True,
+            }
+
+        raise NoTranscriptAvailableError("No transcript/subtitles available for this video.")
+
+    def get_video_info(self, url: str, username: str | None = None, password: str | None = None):
+        self._reset_cookie_state()
+        ydl_opts = {"quiet": True, "skip_download": True, "logger": self.ydl_logger}
+        if username and password:
+            ydl_opts["username"] = username
+            ydl_opts["password"] = password
+        self._apply_cookies(ydl_opts)
+        self._apply_js_runtime_opts(ydl_opts)
+
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                if "entries" in info:
+                    return info["entries"]
+                return [info]
+        except Exception as first_err:
+            if self._should_try_browser_cookies(url, first_err):
+                site_label = self._site_label(url)
+                last_err = first_err
+                candidates = self._browser_candidates()
+                self.log(f"[yt-dlp] Browser cookie candidates: {', '.join(candidates)}")
+                for browser in candidates:
+                    self.log(f"[yt-dlp] Retry with cookies from browser ({browser}) for {site_label}…")
+                    try:
+                        retry_opts = dict(ydl_opts)
+                        retry_opts.pop("cookiefile", None)
+                        retry_opts["cookiesfrombrowser"] = (browser,)
+                        self._mark_browser_cookies(browser)
+                        with yt_dlp.YoutubeDL(retry_opts) as ydl:
+                            info = ydl.extract_info(url, download=False)
+                            if "entries" in info:
+                                return info["entries"]
+                            return [info]
+                    except Exception as retry_err:
+                        self.log(f"[yt-dlp] Browser cookies ({browser}) failed: {self._format_exception(retry_err)}")
+                        hint = self._cookie_failure_hint(retry_err)
+                        if hint:
+                            self.log(f"[yt-dlp] {hint}")
+                        last_err = retry_err
+                        continue
+                self.log("[yt-dlp] All browser cookie attempts failed; falling back to cookies.txt prompt.")
+                raise CookiesRequiredError(original=last_err) from first_err
+            raise
+
+    def download(
+        self,
+        url: str,
+        format_id: str,
+        out_path: str,
+        progress_hook: Callable | None = None,
+        post_hook: Callable[[str], None] | None = None,
+    ) -> bool:
+        self._reset_cookie_state()
+        opts = {
+            "format": format_id,
+            "outtmpl": out_path,
+            "progress_hooks": [progress_hook] if progress_hook else [],
+            "post_hooks": [post_hook] if post_hook else [],
+            "quiet": True,
+            "logger": self.ydl_logger,
+        }
+        self._apply_cookies(opts)
+        self._apply_js_runtime_opts(opts)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+            return True
+        except Exception as first_err:
+            if self._should_try_browser_cookies(url, first_err):
+                site_label = self._site_label(url)
+                last_err = first_err
+                candidates = self._browser_candidates()
+                self.log(f"[yt-dlp] Browser cookie candidates: {', '.join(candidates)}")
+                for browser in candidates:
+                    self.log(f"[yt-dlp] Download retry with cookies from browser ({browser}) for {site_label}…")
+                    try:
+                        retry_opts = dict(opts)
+                        retry_opts.pop("cookiefile", None)
+                        retry_opts["cookiesfrombrowser"] = (browser,)
+                        self._mark_browser_cookies(browser)
+                        with yt_dlp.YoutubeDL(retry_opts) as ydl:
+                            ydl.download([url])
+                        return True
+                    except Exception as retry_err:
+                        self.log(f"[yt-dlp] Browser cookies ({browser}) failed: {self._format_exception(retry_err)}")
+                        hint = self._cookie_failure_hint(retry_err)
+                        if hint:
+                            self.log(f"[yt-dlp] {hint}")
+                        last_err = retry_err
+                        continue
+                self.log("[yt-dlp] All browser cookie attempts failed; falling back to cookies.txt prompt.")
+                raise CookiesRequiredError(original=last_err) from first_err
+            self.log_error("Download", first_err)
+            return False
+
+    def download_transcript(
+        self,
+        url: str,
+        out_path: str,
+        selected_track: TranscriptTrack | None = None,
+    ) -> TranscriptDownloadResult:
+        self._reset_cookie_state()
+        opts = {
+            "skip_download": True,
+            "outtmpl": out_path,
+            "quiet": True,
+            "logger": self.ydl_logger,
+        }
+        self._apply_cookies(opts)
+        self._apply_js_runtime_opts(opts)
+
+        def attempt(current_opts: dict) -> TranscriptDownloadResult:
+            with yt_dlp.YoutubeDL(current_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                config = self._transcript_download_config(info or {}, selected_track=selected_track)
+
+            selected_languages = list(config["languages"])
+            available_languages = list(config.get("available_languages", selected_languages))
+            if available_languages:
+                selected_label = ", ".join(selected_languages)
+                available_label = ", ".join(available_languages)
+                self.log(
+                    f"[yt-dlp] Transcript selection: {config['source']} -> {selected_label} "
+                    f"(available: {available_label})"
+                )
+
+            download_opts = dict(current_opts)
+            download_opts.update(
+                {
+                    "writesubtitles": bool(config["writesubtitles"]),
+                    "writeautomaticsub": bool(config["writeautomaticsub"]),
+                    "subtitleslangs": list(config["languages"]),
+                }
+            )
+            with yt_dlp.YoutubeDL(download_opts) as ydl:
+                ydl.download([url])
+            return TranscriptDownloadResult(
+                source=str(config["source"]),
+                languages=list(config["languages"]),
+            )
+
+        try:
+            return attempt(opts)
+        except Exception as first_err:
+            if self._should_try_browser_cookies(url, first_err):
+                site_label = self._site_label(url)
+                last_err = first_err
+                candidates = self._browser_candidates()
+                self.log(f"[yt-dlp] Browser cookie candidates: {', '.join(candidates)}")
+                for browser in candidates:
+                    self.log(f"[yt-dlp] Transcript retry with cookies from browser ({browser}) for {site_label}…")
+                    try:
+                        retry_opts = dict(opts)
+                        retry_opts.pop("cookiefile", None)
+                        retry_opts["cookiesfrombrowser"] = (browser,)
+                        self._mark_browser_cookies(browser)
+                        return attempt(retry_opts)
+                    except Exception as retry_err:
+                        self.log(f"[yt-dlp] Browser cookies ({browser}) failed: {self._format_exception(retry_err)}")
+                        hint = self._cookie_failure_hint(retry_err)
+                        if hint:
+                            self.log(f"[yt-dlp] {hint}")
+                        last_err = retry_err
+                        continue
+                self.log("[yt-dlp] All browser cookie attempts failed; falling back to cookies.txt prompt.")
+                raise CookiesRequiredError(original=last_err) from first_err
+            raise

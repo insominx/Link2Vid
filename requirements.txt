@@ -1,0 +1,8 @@
+customtkinter>=5.2.2
+yt-dlp[default]>=2026.03.13
+yt-dlp-ejs>=0.7.0
+beautifulsoup4>=4.14.3
+requests>=2.32.5
+selenium>=4.40.0
+m3u8
+Pillow>=10.0.0
