@@ -23,6 +23,16 @@ class TestFetcher(unittest.TestCase):
         outcome = fetcher.fetch(f"https://{VIDEO_HOST_A}/watch/abc")
         self.assertIsInstance(outcome, NeedsCookies)
 
+    def test_fetch_returns_needs_selenium_for_login_redirect_after_cookie_retry(self):
+        def raise_cookie_after_login_redirect(*_args, **_kwargs):
+            initial = Exception(f"ERROR: Unsupported URL: https://community.{VIDEO_HOST_A}/users/login")
+            retry = Exception("ERROR: Could not copy Chrome cookie database")
+            raise CookiesRequiredError(original=retry) from initial
+
+        fetcher = VideoFetcher(get_video_info=raise_cookie_after_login_redirect)
+        outcome = fetcher.fetch(f"https://community.{VIDEO_HOST_A}/c/test")
+        self.assertIsInstance(outcome, NeedsSelenium)
+
     def test_fetch_returns_needs_cookies_for_cookie_signal(self):
         def raise_err(*_args, **_kwargs):
             raise Exception("HTTP Error 403: Forbidden")

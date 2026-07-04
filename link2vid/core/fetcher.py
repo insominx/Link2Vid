@@ -61,10 +61,14 @@ class VideoFetcher:
             entries = self.get_video_info(url, username, password)
             return FetchResults(entries=entries)
         except CookiesRequiredError as exc:
+            if self._should_try_selenium_for_auth(url, exc, username, password):
+                return NeedsSelenium(error=exc)
             return NeedsCookies(error=exc)
         except Exception as exc:
             ytdlp_error = exc
             if self._needs_cookies(url, exc):
+                if self._should_try_selenium_for_auth(url, exc, username, password):
+                    return NeedsSelenium(error=exc)
                 return NeedsCookies(error=exc)
             if self._is_no_video_error(exc):
                 return FetchError(error=exc)
@@ -118,3 +122,41 @@ class VideoFetcher:
             "verification",
         )
         return any(token in message for token in signals)
+
+    def _should_try_selenium_for_auth(
+        self,
+        url: str,
+        exc: Exception,
+        username: str | None,
+        password: str | None,
+    ) -> bool:
+        if self._is_login_redirect_error(exc):
+            return True
+        if username and password:
+            return True
+        return bool(dev_domain_for_url(url, self.dev_defaults))
+
+    def _is_login_redirect_error(self, exc: Exception) -> bool:
+        for message in self._exception_messages(exc):
+            if "unsupported url" not in message:
+                continue
+            if any(token in message for token in ("/login", "/users/login", "/sign_in", "/sign-in")):
+                return True
+        return False
+
+    def _exception_messages(self, exc: Exception) -> list[str]:
+        messages: list[str] = []
+        seen: set[int] = set()
+        pending: list[Exception | None] = [exc]
+        while pending:
+            current = pending.pop()
+            if current is None or id(current) in seen:
+                continue
+            seen.add(id(current))
+            messages.append(str(current).lower())
+            original = getattr(current, "original", None)
+            if isinstance(original, Exception):
+                pending.append(original)
+            pending.append(current.__cause__)
+            pending.append(current.__context__)
+        return messages

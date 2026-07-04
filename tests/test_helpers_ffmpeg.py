@@ -26,8 +26,16 @@ class TestDownloadWithFfmpeg(unittest.TestCase):
     @patch("link2vid.core.helpers.os.path.isfile", return_value=True)
     @patch("link2vid.core.helpers.os.path.getsize", return_value=1024)
     @patch("link2vid.core.helpers.probe_media_duration", return_value=100.0)
+    @patch("link2vid.core.helpers.subprocess.CREATE_NO_WINDOW", 0x08000000, create=True)
+    @patch("link2vid.core.helpers.sys.platform", "win32")
     @patch("link2vid.core.helpers.subprocess.Popen")
-    def test_download_with_ffmpeg_uses_real_crlf_in_headers(self, popen_mock, _duration, _size, _exists):
+    def test_download_with_ffmpeg_uses_real_crlf_in_headers(
+        self,
+        popen_mock,
+        _duration,
+        _size,
+        _exists,
+    ):
         proc = MagicMock()
         proc.stdout = iter(["out_time_ms=50000\n", "progress=end\n"])
         proc.wait.return_value = None
@@ -47,6 +55,7 @@ class TestDownloadWithFfmpeg(unittest.TestCase):
         self.assertNotIn("\\r\\n", header_block)
         self.assertIn("Referer: https://player.vimeo.com/", header_block)
         self.assertIn("-progress", cmd)
+        self.assertEqual(popen_mock.call_args.kwargs["creationflags"], 0x08000000)
 
     @patch("link2vid.core.helpers.os.path.isfile", return_value=True)
     @patch("link2vid.core.helpers.os.path.getsize", return_value=1024)
@@ -91,6 +100,17 @@ class TestDownloadWithFfmpeg(unittest.TestCase):
         duration = probe_media_duration("https://cdn.example.com/playlist.m3u8")
 
         self.assertEqual(duration, 240.0)
+
+    @patch("link2vid.core.helpers.subprocess.CREATE_NO_WINDOW", 0x08000000, create=True)
+    @patch("link2vid.core.helpers.sys.platform", "win32")
+    @patch("link2vid.core.helpers.subprocess.run")
+    def test_probe_media_duration_hides_ffprobe_window(self, run_mock):
+        run_mock.return_value = MagicMock(returncode=0, stdout="12.5\n")
+
+        duration = probe_media_duration("https://cdn.example.com/video.mp4")
+
+        self.assertEqual(duration, 12.5)
+        self.assertEqual(run_mock.call_args.kwargs["creationflags"], 0x08000000)
 
 
 if __name__ == "__main__":

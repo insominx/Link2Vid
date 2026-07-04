@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Callable
 from urllib.parse import urljoin, urlparse
 
@@ -126,6 +127,15 @@ def _ffmpeg_header_args(headers: dict | None) -> tuple[str, str | None]:
     return ua, header_block
 
 
+def _subprocess_no_window_kwargs() -> dict:
+    if not sys.platform.startswith("win"):
+        return {}
+    flag = getattr(subprocess, "CREATE_NO_WINDOW", None)
+    if flag is None:
+        return {}
+    return {"creationflags": flag}
+
+
 def probe_media_duration(media_url: str, headers: dict | None = None) -> float | None:
     if media_url.lower().endswith(".m3u8") or "m3u8" in media_url.lower():
         try:
@@ -157,7 +167,13 @@ def probe_media_duration(media_url: str, headers: dict | None = None) -> float |
         cmd.extend(["-headers", header_block])
     cmd.extend(["-user_agent", ua, media_url])
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+            **_subprocess_no_window_kwargs(),
+        )
         if proc.returncode != 0:
             return None
         value = (proc.stdout or "").strip()
@@ -218,7 +234,13 @@ def download_with_ffmpeg(
         output_file,
     ]
     cmd = [c for c in cmd if c]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        **_subprocess_no_window_kwargs(),
+    )
     output_lines: list[str] = []
     last_fraction = 0.0
     for line in proc.stdout:
