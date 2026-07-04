@@ -1,5 +1,5 @@
 import customtkinter as ctk
-from tkinter import TclError, filedialog, messagebox, simpledialog
+from tkinter import TclError, filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import queue
@@ -38,7 +38,7 @@ from ..core import (
     url_from_clipboard_text,
 )
 from ..core.extractors import build_media_entries, title_from_page_url
-from .components import FooterBar, LogDrawer, VideoCard
+from .components import FooterBar, LogDrawer, VideoCard, prompt_credentials
 from .thumbnail_loader import ThumbnailLoader
 
 ctk.set_appearance_mode("dark")
@@ -1251,22 +1251,7 @@ class VideoDownloaderApp:
             self.log(f"[dev] Using developer.json credentials for {domain}.")
             return username, password
 
-        username = simpledialog.askstring(
-            "Login Required",
-            "Enter email or username for this site:",
-            parent=self.root,
-        )
-        if username is None:
-            return None, None
-        password = simpledialog.askstring(
-            "Login Required",
-            "Enter password:",
-            parent=self.root,
-            show="*",
-        )
-        if password is None:
-            return None, None
-        return username, password
+        return prompt_credentials(self.root, url)
 
     def selenium_fallback(self, page_url, username=None, password=None):
         if not username or not password:
