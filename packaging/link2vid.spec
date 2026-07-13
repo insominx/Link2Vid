@@ -2,7 +2,12 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import (
+    collect_all,
+    collect_data_files,
+    collect_dynamic_libs,
+    collect_submodules,
+)
 
 block_cipher = None
 
@@ -18,6 +23,10 @@ for pkg in ("yt_dlp", "customtkinter"):
     binaries += pkg_binaries
     hiddenimports += pkg_hiddenimports
 
+datas += collect_data_files("faster_whisper")
+binaries += collect_dynamic_libs("ctranslate2")
+hiddenimports += collect_submodules("faster_whisper")
+
 hiddenimports += [
     "yt_dlp_ejs",
     "PIL",
@@ -25,6 +34,13 @@ hiddenimports += [
     "m3u8",
     "selenium",
     "requests",
+    "ctranslate2",
+    "ctranslate2._ext",
+    "av",
+    "onnxruntime",
+    "tokenizers",
+    "huggingface_hub",
+    "huggingface_hub._snapshot_download",
 ]
 
 a = Analysis(
@@ -36,7 +52,18 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # CTranslate2's converter namespace probes optional ML frameworks that are
+    # not used for Faster Whisper inference. Keep those stacks and model
+    # weights out of the portable CPU-capable distribution.
+    excludes=[
+        "nvidia",
+        "torch",
+        "transformers",
+        "tensorflow",
+        "scipy",
+        "sklearn",
+        "cv2",
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

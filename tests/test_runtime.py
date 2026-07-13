@@ -94,6 +94,38 @@ class TestRuntime(unittest.TestCase):
                         self.assertIn("developer.json=", summary)
                         self.assertIn(str(paths["app_dir"] / "developer.json"), summary)
 
+    def test_model_cache_dir_prefers_localappdata(self):
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": r"C:\Users\demo\AppData\Local"}, clear=False):
+            self.assertEqual(
+                runtime.model_cache_dir(),
+                Path(r"C:\Users\demo\AppData\Local") / "Link2Vid" / "models",
+            )
+
+    def test_model_cache_dir_falls_back_to_home_when_localappdata_missing(self):
+        env = {k: v for k, v in os.environ.items() if k != "LOCALAPPDATA"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch.object(runtime.Path, "home", return_value=Path("/home/demo")):
+                self.assertEqual(
+                    runtime.model_cache_dir(),
+                    Path("/home/demo") / ".link2vid" / "models",
+                )
+
+    def test_model_cache_dir_falls_back_when_localappdata_empty(self):
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": ""}, clear=False):
+            with mock.patch.object(runtime.Path, "home", return_value=Path("D:/Users/demo")):
+                self.assertEqual(
+                    runtime.model_cache_dir(),
+                    Path("D:/Users/demo") / ".link2vid" / "models",
+                )
+
+    def test_model_cache_dir_falls_back_when_localappdata_is_whitespace(self):
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": " \t\r\n "}, clear=False):
+            with mock.patch.object(runtime.Path, "home", return_value=Path("D:/Users/demo")):
+                self.assertEqual(
+                    runtime.model_cache_dir(),
+                    Path("D:/Users/demo") / ".link2vid" / "models",
+                )
+
 
 class tempfile_dev_json:
     def __init__(self, cwd=True, app_dir=True, appdata=True):

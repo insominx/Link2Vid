@@ -6,7 +6,7 @@ Current layout and data flow for the desktop app. For media discovery details (S
 
 - **CustomTkinter** — kept the existing UI framework; refactored incrementally into components rather than rewriting.
 - **Core/UI split** — fetch and download logic live in `link2vid/core/`; the UI orchestrates and owns all dialogs and widget updates.
-- **Thread safety** — network, downloads, thumbnails, and Selenium run off the UI thread; workers communicate via `ui_queue` drained on the main thread.
+- **Thread safety** — network, downloads, transcription, thumbnails, and Selenium run off the UI thread; workers communicate via `ui_queue` drained on the main thread.
 
 ## Entry point
 
@@ -25,6 +25,8 @@ Windows portable builds: `build_windows.bat` → `release/Link2Vid/`; launch via
 | `link2vid/core/runtime.py` | Frozen detection, app directory, `developer.json` resolution, sidecar `bin/` PATH bootstrap |
 | `link2vid/core/fetcher.py` | `VideoFetcher.fetch` — yt-dlp first, then configured embedded-page scrape, direct media scan, HLS scan, or `NeedsSelenium` |
 | `link2vid/core/downloader.py` | `DownloadManager` — yt-dlp media/transcript downloads, cookie/browser retry, progress hooks |
+| `link2vid/core/audio_source.py` | `AudioSourceResolver` — exact verified-media reuse or action-owned temporary `bestaudio` acquisition and cleanup |
+| `link2vid/core/whisper_transcription.py` | Faster Whisper contracts, model validation/cache, serialized CUDA-or-CPU transcription, paired text/SRT output |
 | `link2vid/core/extractors.py` | Embedded-page scrape, HTTP direct media scan, HLS detection, `build_media_entries` |
 | `link2vid/core/selenium_fallback.py` | Browser login, `discover_media_urls`, `collapse_selenium_media_candidates`, `selenium_fetch_media_entries` |
 | `link2vid/core/helpers.py` | URL normalization, filename sanitization, FFmpeg helper, format options |
@@ -58,10 +60,31 @@ Per card, user picks a format (Best A+V / Best video / Best audio) or Transcript
 
 Output names use `sanitize_filename` + `unique_output_path` (collision suffix, no silent overwrite).
 
+## Local Whisper flow
+
+Each card exposes a model selector and a Whisper action independently of provider-caption availability.
+
+```
+Whisper click
+  → freeze request, selected model, card epoch, and current VerifiedMedia
+  → AudioSourceResolver
+       1. revalidate and reuse the exact previously downloaded file, or
+       2. download bestaudio into an action-owned temporary workspace
+          (one cookies.txt retry when required)
+  → WhisperService
+       1. load/reuse the selected model from the shared model cache
+       2. use CUDA when CTranslate2 reports a device; otherwise select CPU once
+       3. stream segments into collision-safe .txt and .srt outputs
+  → release temporary source lease
+  → request-scoped queue events update card state and sanitized diagnostics
+```
+
+Model weights live at `%LOCALAPPDATA%\Link2Vid\models` (fallback `~/.link2vid/models`) in both source and frozen modes. They are downloaded on demand and are never bundled. Whisper work is serialized inside the service to bound native model memory; stale queue events cannot clear or overwrite a newer card run.
+
 ## Threading and UI safety
 
 - Tk/CTk widgets are updated only on the main thread.
-- Background work: fetch, downloads, thumbnails, Selenium.
+- Background work: fetch, downloads, Whisper audio acquisition/transcription, thumbnails, Selenium.
 - Pattern: workers enqueue `(action, payload)` tuples; `process_ui_queue` drains them on the UI thread.
 
 ## Local configuration

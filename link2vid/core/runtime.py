@@ -24,6 +24,20 @@ def _appdata_developer_json() -> Path:
     return Path(appdata) / "Link2Vid" / "developer.json"
 
 
+def model_cache_dir() -> Path:
+    """Return the shared Faster Whisper model cache root.
+
+    Prefers ``%LOCALAPPDATA%\\Link2Vid\\models``. When ``LOCALAPPDATA`` is
+    unset, empty, or whitespace-only, falls back to ``~/.link2vid/models``.
+    Source and frozen modes share this path; model weights are never bundled
+    with the app.
+    """
+    local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_appdata:
+        return Path(local_appdata) / "Link2Vid" / "models"
+    return Path.home() / ".link2vid" / "models"
+
+
 def resolve_developer_json() -> Path | None:
     if is_frozen():
         candidates = [

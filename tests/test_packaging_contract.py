@@ -1,3 +1,4 @@
+import ast
 import re
 import unittest
 from pathlib import Path
@@ -13,6 +14,13 @@ REQUIRED_HIDDENIMPORTS = {
     "m3u8",
     "selenium",
     "requests",
+    "ctranslate2",
+    "ctranslate2._ext",
+    "av",
+    "onnxruntime",
+    "tokenizers",
+    "huggingface_hub",
+    "huggingface_hub._snapshot_download",
 }
 
 REQUIRED_COLLECT_ALL = {
@@ -40,6 +48,12 @@ class TestPackagingContract(unittest.TestCase):
                 f"spec hiddenimports must include {name}",
             )
 
+    def test_spec_collects_whisper_assets_and_native_libraries(self):
+        text = SPEC_PATH.read_text(encoding="utf-8")
+        self.assertIn('collect_data_files("faster_whisper")', text)
+        self.assertIn('collect_dynamic_libs("ctranslate2")', text)
+        self.assertIn('collect_submodules("faster_whisper")', text)
+
     def test_spec_onedir_collect(self):
         text = SPEC_PATH.read_text(encoding="utf-8")
         self.assertIn("COLLECT(", text)
@@ -49,6 +63,38 @@ class TestPackagingContract(unittest.TestCase):
     def test_spec_entry_point(self):
         text = SPEC_PATH.read_text(encoding="utf-8")
         self.assertIn("video_downloader.py", text)
+
+    def test_spec_does_not_bundle_models_or_nvidia_packages(self):
+        text = SPEC_PATH.read_text(encoding="utf-8")
+        expected_excludes = {
+            "nvidia",
+            "torch",
+            "transformers",
+            "tensorflow",
+            "scipy",
+            "sklearn",
+            "cv2",
+        }
+        tree = ast.parse(text, filename=str(SPEC_PATH))
+        analysis_call = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Analysis"
+        )
+        excludes_node = next(
+            keyword.value
+            for keyword in analysis_call.keywords
+            if keyword.arg == "excludes"
+        )
+        excludes = set(ast.literal_eval(excludes_node))
+        self.assertTrue(
+            expected_excludes.issubset(excludes),
+            f"missing optional inference exclusions: {expected_excludes - excludes}",
+        )
+        self.assertNotIn("download_model(", text)
+        self.assertNotIn("WhisperModel(", text)
 
     def test_build_script_outputs_release_folder(self):
         text = BUILD_BAT.read_text(encoding="utf-8")

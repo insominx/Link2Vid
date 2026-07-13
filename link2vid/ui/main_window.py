@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import customtkinter as ctk
 from tkinter import TclError, filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor
+import math
 import threading
 import queue
 import os
@@ -9,13 +12,15 @@ import json
 import time
 import sys
 import tempfile
-from dataclasses import dataclass
+import uuid
 from pathlib import Path
 from urllib.parse import urlparse
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ..core.dev_defaults import dev_credentials_for_url, dev_domain_for_url, resolve_login_plan
 from ..core import (
+    AudioAcquisitionError,
+    AudioSourceResolver,
     CookiesRequiredError,
     DirectHlsFound,
     DownloadManager,
@@ -24,7 +29,15 @@ from ..core import (
     FetchResults,
     NeedsCookies,
     NeedsSelenium,
+    SourceKind,
+    TranscriptionRequest,
+    TranscriptionResult,
+    VerifiedMedia,
     VideoFetcher,
+    WhisperPhase,
+    WhisperRunSnapshot,
+    WhisperService,
+    WhisperDiagnosticsInput,
     build_diagnostics,
     classify_error,
     get_error_guidance,
@@ -33,23 +46,39 @@ from ..core import (
     get_yt_dlp_version,
     normalize_url,
     sanitize_filename,
+    sanitize_whisper_error_reason,
     unique_output_path,
     selenium_fetch_media_entries,
     url_from_clipboard_text,
 )
 from ..core.extractors import build_media_entries, title_from_page_url
+from ..core.runtime import model_cache_dir
 from .components import FooterBar, LogDrawer, VideoCard, prompt_credentials
 from .thumbnail_loader import ThumbnailLoader
 
+# Card status labels for Whisper phases (unknown-duration work stays indeterminate).
+_WHISPER_PHASE_STATUS = {
+    WhisperPhase.PREPARING_AUDIO: "Preparing audio",
+    WhisperPhase.DOWNLOADING_AUDIO: "Downloading audio",
+    WhisperPhase.WAITING_FOR_SERVICE: "Waiting for service",
+    WhisperPhase.LOADING_MODEL: "Loading model",
+    WhisperPhase.FALLING_BACK_CPU: "Falling back to CPU",
+    WhisperPhase.TRANSCRIBING: "Transcribing",
+    WhisperPhase.WRITING: "Writing transcript",
+}
+_WHISPER_INDETERMINATE_PHASES = frozenset(
+    {
+        WhisperPhase.PREPARING_AUDIO,
+        WhisperPhase.WAITING_FOR_SERVICE,
+        WhisperPhase.LOADING_MODEL,
+        WhisperPhase.FALLING_BACK_CPU,
+        WhisperPhase.TRANSCRIBING,
+        WhisperPhase.WRITING,
+    }
+)
+
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
-
-
-@dataclass(frozen=True)
-class VerifiedOutput:
-    path: str
-    size: int
-    modified_at: float
 
 
 def format_duration_text(duration) -> str | None:
@@ -96,7 +125,13 @@ class YtDlpLogger:
 
 
 class VideoDownloaderApp:
-    def __init__(self, root):
+    def __init__(
+        self,
+        root,
+        *,
+        whisper_service: WhisperService | None = None,
+        audio_source_resolver: AudioSourceResolver | None = None,
+    ):
         self.root = root
         self.root.title('Video Downloader (Cards UI)')
         self.root.geometry('1100x800')
@@ -138,6 +173,18 @@ class VideoDownloaderApp:
         self.placeholder_cache = {}
         self.placeholder_font = None
         self.busy_cards = set()
+        # Main-thread/session map: exact verified media for Whisper reuse (Phase 2B).
+        # Only process_ui_queue / main-thread helpers mutate this; workers enqueue events.
+        self.verified_media_by_card: dict = {}
+        self._verified_media_epoch_by_card: dict = {}
+        # Whisper session state (Phase 2C1). Maps mutate only via the UI queue consumer.
+        self.whisper_runs_by_card: dict = {}
+        self.whisper_request_id_by_card: dict = {}
+        self.latest_whisper_card = None
+        self.whisper_models: list[str] = []
+        # Serialize the interactive selection plus immediate retry so two
+        # Whisper workers cannot apply each other's app-global cookies path.
+        self._whisper_cookie_retry_lock = threading.Lock()
         self.output_path = self.get_default_output_path()
         self.cookies_path = None
         self.ydl_logger = YtDlpLogger(self)
@@ -147,6 +194,13 @@ class VideoDownloaderApp:
             log_error=self.log_error,
             dev_defaults=self.dev_defaults,
             get_cookies_path=lambda: self.cookies_path,
+        )
+        # Per-app ownership: no module singleton. Construction stays lazy (no native import).
+        self.whisper_service = whisper_service if whisper_service is not None else WhisperService()
+        self.audio_source_resolver = (
+            audio_source_resolver
+            if audio_source_resolver is not None
+            else AudioSourceResolver(download_manager=self.download_manager)
         )
         self.fetcher = VideoFetcher(
             get_video_info=self.download_manager.get_video_info,
@@ -246,6 +300,7 @@ class VideoDownloaderApp:
         self.log(f"yt-dlp version: {get_yt_dlp_version()}")
         self.check_ffmpeg()
         self.check_js_runtime()
+        self._probe_whisper_models()
         self.log("Tip: Link2Vid tries browser cookies automatically for auth-like failures before asking for cookies.txt.")
 
     def _populate_url_from_clipboard_if_valid(self) -> None:
@@ -373,6 +428,16 @@ class VideoDownloaderApp:
                 elif action == "card_busy":
                     card, busy = payload
                     self._set_card_busy(card, busy)
+                elif action == "verified_media":
+                    self._apply_verified_media_event(payload)
+                elif action in (
+                    "whisper_snapshot",
+                    "card_progress_mode",
+                    "whisper_card_progress",
+                    "whisper_status",
+                    "whisper_busy",
+                ):
+                    self._consume_whisper_ui_event(action, payload)
                 elif action == "fetch_done":
                     self.is_fetching = False
                     self.update_button_states()
@@ -390,6 +455,293 @@ class VideoDownloaderApp:
         except queue.Empty:
             pass
         self.root.after(100, self.process_ui_queue)
+
+    def _probe_whisper_models(self) -> None:
+        """Lazily probe exact Faster Whisper aliases; never download or load a model.
+
+        Import/probe failure leaves an empty alias list so the rest of the app
+        still launches. Instantiating ``WhisperService`` itself does not import
+        native dependencies; probing goes through the injectable adapter.
+        """
+        try:
+            aliases = [
+                str(alias)
+                for alias in self.whisper_service.list_available_models()
+                if alias
+            ]
+        except Exception as exc:
+            self.whisper_models = []
+            self._log_whisper_safely(
+                "Whisper unavailable: dependency import/probe failed "
+                f"({type(exc).__name__}: {exc}). Download and provider Transcript "
+                "actions remain available."
+            )
+            return
+
+        self.whisper_models = aliases
+        if aliases:
+            self._log_whisper_safely(
+                f"Whisper models available: {len(aliases)} "
+                f"(default preference: small when present)."
+            )
+        else:
+            self._log_whisper_safely(
+                "Whisper model probe returned no aliases; Whisper controls stay disabled."
+            )
+
+    def _log_whisper_safely(self, message: str) -> None:
+        """Best-effort main-thread logging that cannot break queue consumption."""
+        try:
+            self.log(message)
+        except Exception:
+            try:
+                self._append_debug_log(message)
+            except Exception:
+                pass
+
+    def _consume_whisper_ui_event(self, action: str, payload) -> None:
+        """Apply one Whisper UI event without aborting the surrounding queue drain."""
+        try:
+            if action == "whisper_snapshot":
+                self._apply_whisper_snapshot_event(payload)
+            elif action == "card_progress_mode":
+                self._apply_card_progress_mode_event(payload)
+            elif action == "whisper_card_progress":
+                self._apply_whisper_card_progress_event(payload)
+            elif action == "whisper_status":
+                self._apply_whisper_status_event(payload)
+            elif action == "whisper_busy":
+                self._apply_whisper_busy_event(payload)
+        except Exception as exc:
+            self._log_whisper_safely(
+                f"Dropped {action} event after widget/session failure "
+                f"({type(exc).__name__}: {exc})."
+            )
+
+    def _whisper_event_is_current(self, card, request_id: str) -> bool:
+        """Return True when a Whisper queue event may mutate session/widget state."""
+        if not request_id or card is None:
+            return False
+        if not any(session_card is card for session_card in self.card_entries):
+            return False
+        try:
+            if not card.winfo_exists():
+                return False
+        except Exception as exc:
+            self._log_whisper_safely(
+                "Dropped Whisper event because its card widget is unavailable "
+                f"({type(exc).__name__}: {exc})."
+            )
+            return False
+        return self.whisper_request_id_by_card.get(card) == request_id
+
+    def _apply_whisper_snapshot_event(self, payload) -> None:
+        """Apply ``whisper_snapshot`` on the main thread only.
+
+        Payload shape: ``(card, request_id, snapshot)`` where ``snapshot`` is a
+        ``WhisperRunSnapshot``. Stale/mismatched/destroyed events are dropped.
+        This is the sole mutator of ``whisper_runs_by_card``.
+        """
+        try:
+            card, request_id, snapshot = payload
+        except (TypeError, ValueError):
+            return
+        if not self._whisper_event_is_current(card, request_id):
+            return
+        if not isinstance(snapshot, WhisperRunSnapshot):
+            return
+        if snapshot.request_id != request_id:
+            return
+        self.whisper_runs_by_card[card] = snapshot
+
+    def _apply_card_progress_mode_event(self, payload) -> None:
+        """Apply ``card_progress_mode`` on the main thread only.
+
+        Payload shape: ``(card, request_id, mode)`` where ``mode`` is
+        ``determinate``, ``indeterminate``, or ``reset``.
+        """
+        try:
+            card, request_id, mode = payload
+        except (TypeError, ValueError):
+            return
+        if not self._whisper_event_is_current(card, request_id):
+            return
+        normalized = str(mode).strip().lower()
+        if normalized == "reset":
+            card.reset_progress()
+            return
+        if normalized in ("determinate", "indeterminate"):
+            card.set_progress_mode(normalized)
+
+    def _apply_whisper_card_progress_event(self, payload) -> None:
+        """Apply request-aware numeric Whisper card progress on the main thread.
+
+        Payload shape: ``(card, request_id, value)`` where ``value`` is a
+        fraction in ``[0, 1]`` from real yt-dlp acquisition progress only.
+        Stale/mismatched/destroyed events are dropped without fabricating values.
+        """
+        try:
+            card, request_id, value = payload
+        except (TypeError, ValueError):
+            return
+        if not self._whisper_event_is_current(card, request_id):
+            return
+        try:
+            progress = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return
+        card.set_progress(progress)
+
+    def _apply_whisper_status_event(self, payload) -> None:
+        """Apply ``whisper_status`` on the main thread only.
+
+        Payload shape: ``(card, request_id, status, state)``. Narrow status
+        helper for Whisper workers; same request/card guards as snapshots.
+        """
+        try:
+            card, request_id, status, state = payload
+        except (TypeError, ValueError):
+            return
+        if not self._whisper_event_is_current(card, request_id):
+            return
+        card.set_status(status, state=state)
+
+    def _apply_whisper_busy_event(self, payload) -> None:
+        """Apply request-aware ``whisper_busy`` on the main thread only.
+
+        Payload shape: ``(card, request_id, busy)``. Clearing busy is ignored
+        when ``request_id`` no longer matches so a stale worker cannot re-enable
+        a newer card action. Setting busy still requires a current request.
+        """
+        try:
+            card, request_id, busy = payload
+        except (TypeError, ValueError):
+            return
+        if not self._whisper_event_is_current(card, request_id):
+            return
+        self._set_card_busy(card, bool(busy))
+
+    def queue_whisper_snapshot(self, card, request_id: str, snapshot: WhisperRunSnapshot) -> None:
+        """Enqueue or apply an immutable Whisper run snapshot for a card."""
+        payload = (card, request_id, snapshot)
+        if threading.get_ident() != self.main_thread_id:
+            self.ui_queue.put(("whisper_snapshot", payload))
+            return
+        self._consume_whisper_ui_event("whisper_snapshot", payload)
+
+    def queue_card_progress_mode(self, card, request_id: str, mode: str) -> None:
+        """Enqueue or apply explicit card progress mode for a Whisper request."""
+        payload = (card, request_id, mode)
+        if threading.get_ident() != self.main_thread_id:
+            self.ui_queue.put(("card_progress_mode", payload))
+            return
+        self._consume_whisper_ui_event("card_progress_mode", payload)
+
+    def queue_whisper_card_progress(self, card, request_id: str, value: float) -> None:
+        """Enqueue or apply request-aware numeric Whisper card progress.
+
+        Workers must use this instead of ``queue_card_progress`` so stale
+        acquisition updates cannot mutate a newer card action.
+        """
+        try:
+            progress = max(0.0, min(1.0, float(value)))
+        except (TypeError, ValueError):
+            return
+        payload = (card, request_id, progress)
+        if threading.get_ident() != self.main_thread_id:
+            self.ui_queue.put(("whisper_card_progress", payload))
+            return
+        self._consume_whisper_ui_event("whisper_card_progress", payload)
+
+    def queue_whisper_status(
+        self,
+        card,
+        request_id: str,
+        status: str,
+        state: str | None = None,
+    ) -> None:
+        """Enqueue or apply a Whisper-scoped card status update.
+
+        Active Whisper phases use the existing ``downloading`` card state.
+        """
+        payload = (card, request_id, status, state)
+        if threading.get_ident() != self.main_thread_id:
+            self.ui_queue.put(("whisper_status", payload))
+            return
+        self._consume_whisper_ui_event("whisper_status", payload)
+
+    def queue_whisper_busy(self, card, request_id: str, busy: bool) -> None:
+        """Enqueue or apply request-aware busy state for a Whisper run.
+
+        Workers must use this instead of ``queue_card_busy`` so a stale
+        terminal clear cannot overwrite a newer action's busy ownership.
+        """
+        payload = (card, request_id, bool(busy))
+        if threading.get_ident() != self.main_thread_id:
+            self.ui_queue.put(("whisper_busy", payload))
+            return
+        self._consume_whisper_ui_event("whisper_busy", payload)
+
+    def _card_in_session(self, card) -> bool:
+        if card is None or not any(
+            session_card is card for session_card in self.card_entries
+        ):
+            return False
+        try:
+            return bool(card.winfo_exists())
+        except Exception:
+            return False
+
+    def _next_verified_media_epoch(self, card) -> int:
+        epoch = self._verified_media_epoch_by_card.get(card, 0) + 1
+        self._verified_media_epoch_by_card[card] = epoch
+        return epoch
+
+    def _apply_verified_media_event(self, payload) -> None:
+        """Apply a verified-media queue event on the main thread only.
+
+        Payload shape: ``(card, media, epoch)`` where ``media`` is
+        ``VerifiedMedia | None``. ``None`` clears the card association.
+        Events for cards no longer in ``card_entries`` / destroyed widgets are
+        dropped. Epoch mismatches drop late associations from superseded actions.
+        """
+        try:
+            card, media, epoch = payload
+        except (TypeError, ValueError):
+            return
+        if not self._card_in_session(card):
+            return
+        if epoch != self._verified_media_epoch_by_card.get(card):
+            return
+        if media is None:
+            self.verified_media_by_card.pop(card, None)
+            return
+        if not isinstance(media, VerifiedMedia):
+            return
+        self.verified_media_by_card[card] = media
+
+    def invalidate_verified_media(self, card) -> int:
+        """Clear a card's verified-media association before a new media action.
+
+        Must run on the main thread (never a background write). Returns the
+        epoch workers must present when associating a new result. Prior queued
+        associations with a stale epoch are dropped by ``_apply_verified_media_event``.
+        """
+        if card is None:
+            return 0
+        if threading.get_ident() != self.main_thread_id:
+            raise RuntimeError("invalidate_verified_media must run on the UI thread")
+        epoch = self._next_verified_media_epoch(card)
+        self.verified_media_by_card.pop(card, None)
+        return epoch
+
+    def queue_verified_media(self, card, media: VerifiedMedia | None, epoch: int) -> None:
+        """Enqueue or apply an exact-card verified-media association."""
+        payload = (card, media, epoch)
+        if threading.get_ident() != self.main_thread_id:
+            self.ui_queue.put(("verified_media", payload))
+            return
+        self._apply_verified_media_event(payload)
 
     def set_progress(self, value):
         value = max(0.0, min(1.0, value))
@@ -478,6 +830,44 @@ class VideoDownloaderApp:
                 "Some downloads may fail without one."
             )
 
+    def _latest_whisper_diagnostics_input(self) -> WhisperDiagnosticsInput | None:
+        """Return Whisper fields for Copy Diagnostics from the latest live run only.
+
+        Selection is deterministic: only ``latest_whisper_card`` is considered.
+        The card must still be in the current session, its widget must exist, and
+        the stored snapshot ``request_id`` must match ``whisper_request_id_by_card``.
+        Never falls back to another card or an older mismatched run.
+        """
+        card = self.latest_whisper_card
+        if card is None:
+            return None
+        if not any(session_card is card for session_card in self.card_entries):
+            return None
+        try:
+            if not card.winfo_exists():
+                return None
+        except Exception:
+            return None
+        request_id = self.whisper_request_id_by_card.get(card)
+        if not request_id:
+            return None
+        snapshot = self.whisper_runs_by_card.get(card)
+        if not isinstance(snapshot, WhisperRunSnapshot):
+            return None
+        if snapshot.request_id != request_id:
+            return None
+        phase = snapshot.phase
+        phase_value = phase.value if isinstance(phase, WhisperPhase) else str(phase)
+        return WhisperDiagnosticsInput(
+            model_name=snapshot.model_name,
+            phase=phase_value,
+            cache_root=snapshot.cache_root,
+            source_kind=snapshot.source_kind,
+            effective_device=snapshot.effective_device,
+            fallback_used=snapshot.fallback_used,
+            error_reason=snapshot.error_reason,
+        )
+
     def copy_diagnostics(self):
         url = self.url_entry.get().strip()
         cookies_mode = getattr(self.download_manager, "last_cookies_mode", "none") or "none"
@@ -506,6 +896,7 @@ class VideoDownloaderApp:
             last_error=self.last_error,
             last_error_reason=self.last_error_reason,
             log_history=self.log_history,
+            whisper=self._latest_whisper_diagnostics_input(),
         )
         self.root.clipboard_clear()
         self.root.clipboard_append("\n".join(lines))
@@ -662,6 +1053,11 @@ class VideoDownloaderApp:
         self.cards = []
         self.card_entries = {}
         self.busy_cards.clear()
+        self.verified_media_by_card.clear()
+        self._verified_media_epoch_by_card.clear()
+        self.whisper_runs_by_card.clear()
+        self.whisper_request_id_by_card.clear()
+        self.latest_whisper_card = None
         self.rendered_count = 0
         if self.load_more_button.winfo_manager():
             self.load_more_button.pack_forget()
@@ -720,8 +1116,10 @@ class VideoDownloaderApp:
                 metadata=metadata,
                 format_options=self.format_options,
                 transcript_options=transcript_options,
+                whisper_models=self.whisper_models,
                 on_download=self.handle_card_download,
                 on_transcript=self.handle_card_transcript,
+                on_whisper=self.handle_card_whisper,
             )
             card.pack(fill="x", padx=8, pady=8)
             if transcript_options == []:
@@ -872,7 +1270,15 @@ class VideoDownloaderApp:
         url = entry.get('webpage_url', self.url_entry.get().strip())
         ffmpeg_headers = entry.get("_ffmpeg_headers")
         if ffmpeg_headers:
-            self._download_direct_media(card, url, ffmpeg_headers, entry.get('title', 'Video'))
+            # Invalidate prior association on the main thread before any worker output.
+            media_epoch = self.invalidate_verified_media(card)
+            self._download_direct_media(
+                card,
+                url,
+                ffmpeg_headers,
+                entry.get('title', 'Video'),
+                media_epoch=media_epoch,
+            )
             return
         fmt_id = format_id or self.format_options[0]["format"]
         fmt_label = self.format_label_map.get(fmt_id, fmt_id)
@@ -886,6 +1292,8 @@ class VideoDownloaderApp:
                 self.log("ffmpeg missing: switching to Best (single file) for compatibility.")
             else:
                 self.log("ffmpeg missing: proceeding without merge support (may fail or be video-only).")
+        # Invalidate prior association on the main thread before any worker output.
+        media_epoch = self.invalidate_verified_media(card)
         self.last_action_kind = "media"
         self.last_selected_format = fmt_id
         self.last_selected_label = fmt_label
@@ -899,7 +1307,7 @@ class VideoDownloaderApp:
         self.log(f"Starting download: {entry.get('title', 'Video')} ({fmt_label})")
         threading.Thread(
             target=self.download_video,
-            args=(url, fmt_id, folder, card, fmt_label),
+            args=(url, fmt_id, folder, card, fmt_label, media_epoch),
             daemon=True,
         ).start()
 
@@ -933,11 +1341,663 @@ class VideoDownloaderApp:
             daemon=True,
         ).start()
 
-    def _download_direct_media(self, card, media_url: str, headers: dict, title: str) -> None:
+    def handle_card_whisper(self, card, selected_model: str) -> None:
+        """Main-thread decision point: freeze one TranscriptionRequest and start a worker.
+
+        Rejects non-current/busy cards and aliases outside the probed exact list.
+        No card/widget/callback/settings objects cross into core.
+        """
+        if threading.get_ident() != self.main_thread_id:
+            self._log_whisper_safely(
+                "Ignored Whisper action started off the UI thread."
+            )
+            return
+        if not self._card_in_session(card):
+            return
+        if card in self.busy_cards:
+            self.log("Whisper ignored: card already has an active action.")
+            return
+        folder = self.output_path
+        if not folder:
+            self.ui_warn("Folder Error", "Select a folder first.")
+            return
+        model_name = str(selected_model or "").strip()
+        if not model_name or model_name not in self.whisper_models:
+            self.log(
+                "Whisper ignored: selected model is not in the probed alias list."
+            )
+            return
+
+        entry = self.card_entries.get(card)
+        if not isinstance(entry, dict):
+            return
+        source_url = str(entry.get("webpage_url") or "").strip()
+        if not source_url:
+            source_url = self.url_entry.get().strip()
+        title = str(entry.get("title") or "Video")
+        verified_media = self.verified_media_by_card.get(card)
+        request_id = str(uuid.uuid4())
+        request = TranscriptionRequest(
+            request_id=request_id,
+            source_url=source_url,
+            title=title,
+            output_dir=Path(folder),
+            model_name=model_name,
+            verified_media=verified_media,
+        )
+
+        worker_started = False
+
+        def run_worker() -> None:
+            nonlocal worker_started
+            # Ownership transfers as soon as a live thread enters its target.
+            # This also covers a custom Thread.start() that launches then raises.
+            worker_started = True
+            self.run_whisper_transcription(card, request)
+
+        try:
+            # Main-thread ownership only; workers never mutate these maps.
+            self.whisper_request_id_by_card[card] = request_id
+            self.latest_whisper_card = card
+            self.last_action_kind = "whisper"
+            self.last_selected_format = None
+            self.last_selected_label = model_name
+            self.last_selected_title = title
+            self.last_transcript_source = None
+            self.last_transcript_languages = []
+            self.queue_card_busy(card, True)
+            initial_snapshot = WhisperRunSnapshot(
+                request_id=request_id,
+                phase=WhisperPhase.PREPARING_AUDIO,
+                model_name=model_name,
+                cache_root=str(model_cache_dir()),
+                effective_device=None,
+                fallback_used=False,
+                source_kind=None,
+                error_reason=None,
+                updated_at=time.time(),
+            )
+            self.queue_whisper_snapshot(card, request_id, initial_snapshot)
+            self.queue_card_progress_mode(card, request_id, "indeterminate")
+            self.queue_whisper_status(
+                card,
+                request_id,
+                _WHISPER_PHASE_STATUS[WhisperPhase.PREPARING_AUDIO],
+                "downloading",
+            )
+            self.log(f"Starting Whisper transcription: {title} [{model_name}]")
+            worker = threading.Thread(target=run_worker, daemon=True)
+            worker.start()
+            # A successful start transfers cleanup even if the target has not
+            # reached run_worker yet.
+            worker_started = True
+        except Exception as exc:
+            if not worker_started:
+                self._cleanup_failed_whisper_start(card, request, exc)
+            else:
+                # A live worker owns terminal cleanup. Suppress callback errors
+                # from synchronous test/custom thread implementations.
+                self._log_whisper_safely(
+                    "Whisper worker raised while taking ownership "
+                    f"({type(exc).__name__}: {exc})."
+                )
+
+    def _cleanup_failed_whisper_start(
+        self,
+        card,
+        request: TranscriptionRequest,
+        exc: BaseException,
+    ) -> None:
+        """Best-effort main-thread rollback before a worker owns cleanup."""
+        request_id = request.request_id
+        # Another request may have taken ownership while a custom/re-entrant
+        # startup helper was running. Stale cleanup must be a complete no-op.
+        if self.whisper_request_id_by_card.get(card) != request_id:
+            return
+        error_reason = self._sanitize_whisper_error(exc)
+
+        try:
+            self.log_error("Whisper", exc)
+        except Exception:
+            self._log_whisper_safely(
+                "Whisper failed before its worker started "
+                f"({type(exc).__name__}: {error_reason})."
+            )
+        finally:
+            # Generic classification may call this error "unknown"; the
+            # actionable Whisper boundary reason remains authoritative.
+            self.last_error_reason = error_reason
+
+        try:
+            cache_root = str(model_cache_dir())
+        except Exception:
+            cache_root = ""
+        failed_snapshot = WhisperRunSnapshot(
+            request_id=request_id,
+            phase=WhisperPhase.FAILED,
+            model_name=request.model_name,
+            cache_root=cache_root,
+            effective_device=None,
+            fallback_used=False,
+            source_kind=None,
+            error_reason=error_reason,
+            updated_at=time.time(),
+        )
+        status = self._whisper_phase_status_text(
+            WhisperPhase.FAILED,
+            error_reason=error_reason,
+        )
+
+        self._best_effort_whisper_start_event(
+            "whisper_snapshot",
+            (card, request_id, failed_snapshot),
+            lambda: self.queue_whisper_snapshot(card, request_id, failed_snapshot),
+        )
+        self._best_effort_whisper_start_event(
+            "whisper_status",
+            (card, request_id, status, "failed"),
+            lambda: self.queue_whisper_status(
+                card,
+                request_id,
+                status,
+                "failed",
+            ),
+        )
+        self._best_effort_whisper_start_event(
+            "card_progress_mode",
+            (card, request_id, "reset"),
+            lambda: self.queue_card_progress_mode(card, request_id, "reset"),
+        )
+
+        # Direct rollback is intentionally main-thread-only. It cannot depend
+        # on another queue/log call succeeding.
+        self.busy_cards.discard(card)
+        try:
+            if self._card_in_session(card):
+                card.set_actions_enabled(bool(self.output_path))
+        except Exception:
+            pass
+        # Retain the matching request ID so the terminal FAILED snapshot stays
+        # current for Copy Diagnostics. A later action replaces it normally.
+
+    def _best_effort_whisper_start_event(
+        self,
+        action: str,
+        payload,
+        publish,
+    ) -> None:
+        """Publish startup-failure UI state, falling back to the consumer."""
+        try:
+            publish()
+            return
+        except Exception:
+            pass
+        try:
+            # This method is used only by the main-thread startup rollback.
+            # Snapshot mutation therefore still goes through the sole consumer.
+            self._consume_whisper_ui_event(action, payload)
+        except Exception:
+            pass
+
+    def _sanitize_whisper_error(self, exc: BaseException) -> str:
+        """Return a core-sanitized actionable reason for a failed snapshot."""
+        if isinstance(exc, CookiesRequiredError):
+            value = exc.original or exc
+            fallback = (
+                "Cookies required; select cookies.txt to retry Whisper audio download"
+            )
+        elif isinstance(exc, AudioAcquisitionError):
+            value = exc
+            fallback = "Audio download failed; no usable audio source was produced"
+        else:
+            value = exc
+            fallback = f"{type(exc).__name__}: transcription failed"
+        return (
+            sanitize_whisper_error_reason(value, fallback=fallback)
+            or "Whisper transcription failed"
+        )
+
+    def _whisper_phase_status_text(
+        self,
+        phase: WhisperPhase,
+        *,
+        result: TranscriptionResult | None = None,
+        error_reason: str | None = None,
+    ) -> str:
+        if phase is WhisperPhase.COMPLETE and result is not None:
+            text_name = Path(result.text_path).name
+            srt_name = Path(result.srt_path).name
+            status = f"Whisper complete: {text_name}, {srt_name}"
+            if result.fallback_used:
+                status += " (CPU fallback)"
+            return status
+        if phase is WhisperPhase.FAILED:
+            reason = error_reason or "transcription failed"
+            return f"Whisper failed: {reason}"
+        return _WHISPER_PHASE_STATUS.get(phase, phase.value.replace("_", " ").title())
+
+    def _log_whisper_worker_event_failure(
+        self,
+        action: str,
+        exc: BaseException,
+    ) -> None:
+        """Best-effort debug logging without calling a failed UI/log helper."""
+        try:
+            self._append_debug_log(
+                "Whisper worker could not publish "
+                f"{action} ({type(exc).__name__}: {exc})."
+            )
+        except Exception:
+            pass
+
+    def _queue_whisper_worker_event(
+        self,
+        action: str,
+        payload,
+        publish,
+    ) -> bool:
+        """Publish one worker event, falling back to its raw queue shape.
+
+        This method never applies an event directly. Workers therefore never
+        mutate widgets, session maps, request IDs, or busy ownership.
+        """
+        try:
+            publish()
+            return True
+        except Exception as exc:
+            self._log_whisper_worker_event_failure(action, exc)
+        try:
+            self.ui_queue.put((action, payload))
+            return True
+        except Exception as exc:
+            self._log_whisper_worker_event_failure(action, exc)
+            return False
+
+    def _publish_whisper_worker_terminal(
+        self,
+        card,
+        request_id: str,
+        snapshot: WhisperRunSnapshot,
+        status: str,
+        state: str,
+    ) -> None:
+        """Attempt terminal snapshot and status independently, in that order."""
+        self._queue_whisper_worker_event(
+            "whisper_snapshot",
+            (card, request_id, snapshot),
+            lambda: self.queue_whisper_snapshot(card, request_id, snapshot),
+        )
+        self._queue_whisper_worker_event(
+            "whisper_status",
+            (card, request_id, status, state),
+            lambda: self.queue_whisper_status(
+                card,
+                request_id,
+                status,
+                state,
+            ),
+        )
+
+    def run_whisper_transcription(self, card, request: TranscriptionRequest) -> None:
+        """Daemon worker: resolve audio, transcribe, queue UI events.
+
+        Never touches widgets, ``whisper_runs_by_card``, request maps, or
+        ``busy_cards`` directly. Reused media stays zero-download. Missing or
+        stale media uses Phase 3A ``AudioSourceResolver`` with request-aware
+        acquisition progress and one UI-mediated cookies.txt retry.
+        """
+        request_id: str | None = None
+        model_name = ""
+        cache_root = ""
+        source_kind: str | None = None
+        effective_device: str | None = None
+        fallback_used = False
+        lease = None
+        terminal_published = False
+        downloading_audio_announced = False
+        last_acquisition_progress: float | None = None
+
+        try:
+            # All request-derived metadata and cache resolution are inside the
+            # lifecycle boundary so any entry failure receives one FAILED
+            # terminal and the request-aware finally cleanup.
+            request_id = request.request_id
+            model_name = request.model_name
+            cache_root = str(model_cache_dir())
+
+            def emit_snapshot(
+                phase: WhisperPhase,
+                *,
+                error: str | None = None,
+                device: str | None = None,
+                fallback: bool | None = None,
+                kind: str | None = None,
+            ) -> None:
+                snapshot = WhisperRunSnapshot(
+                    request_id=request_id,
+                    phase=phase,
+                    model_name=model_name,
+                    cache_root=cache_root,
+                    effective_device=effective_device if device is None else device,
+                    fallback_used=fallback_used if fallback is None else fallback,
+                    source_kind=source_kind if kind is None else kind,
+                    error_reason=error,
+                    updated_at=time.time(),
+                )
+                self.queue_whisper_snapshot(card, request_id, snapshot)
+
+            def on_phase(phase: WhisperPhase) -> None:
+                nonlocal fallback_used, downloading_audio_announced
+                # The worker publishes canonical result/error terminals after
+                # service return/raise. Callback terminals are never forwarded.
+                if phase in (WhisperPhase.COMPLETE, WhisperPhase.FAILED):
+                    return
+                if phase is WhisperPhase.FALLING_BACK_CPU:
+                    fallback_used = True
+                    self._log_whisper_safely(
+                        "Whisper GPU unavailable; falling back to CPU "
+                        f"for {model_name}."
+                    )
+                if phase in _WHISPER_INDETERMINATE_PHASES:
+                    self.queue_card_progress_mode(
+                        card,
+                        request_id,
+                        "indeterminate",
+                    )
+                elif phase is WhisperPhase.DOWNLOADING_AUDIO:
+                    downloading_audio_announced = True
+                    self.queue_card_progress_mode(
+                        card,
+                        request_id,
+                        "determinate",
+                    )
+                status = self._whisper_phase_status_text(phase)
+                self.queue_whisper_status(
+                    card,
+                    request_id,
+                    status,
+                    "downloading",
+                )
+                emit_snapshot(phase, fallback=fallback_used)
+
+            def publish_acquisition_progress(progress: float) -> None:
+                """Publish strictly forward real acquisition progress only."""
+                nonlocal downloading_audio_announced, last_acquisition_progress
+                progress = max(0.0, min(1.0, progress))
+                # yt-dlp estimates can move backward as the total is refined.
+                # Keep the card monotonic and suppress duplicate updates.
+                if (
+                    last_acquisition_progress is not None
+                    and progress <= last_acquisition_progress
+                ):
+                    return
+                if not downloading_audio_announced:
+                    on_phase(WhisperPhase.DOWNLOADING_AUDIO)
+                last_acquisition_progress = progress
+                self.queue_whisper_card_progress(card, request_id, progress)
+
+            def acquisition_progress_hook(d) -> None:
+                if not isinstance(d, dict):
+                    return
+                status = d.get("status")
+                if status == "downloading":
+                    downloaded = d.get("downloaded_bytes")
+                    if downloaded is None:
+                        return
+                    try:
+                        downloaded_value = float(downloaded)
+                    except (TypeError, ValueError):
+                        return
+                    if not math.isfinite(downloaded_value) or downloaded_value < 0:
+                        return
+
+                    total_value = None
+                    for total in (
+                        d.get("total_bytes"),
+                        d.get("total_bytes_estimate"),
+                    ):
+                        try:
+                            candidate = float(total)
+                        except (TypeError, ValueError):
+                            continue
+                        if math.isfinite(candidate) and candidate > 0:
+                            total_value = candidate
+                            break
+                    if total_value is None:
+                        return
+                    publish_acquisition_progress(downloaded_value / total_value)
+                elif (
+                    status == "finished"
+                    and last_acquisition_progress is not None
+                ):
+                    # Resolver/post-hook validation owns output-path truth. A
+                    # finished notification can only complete a bar already
+                    # grounded by this attempt's real byte counters.
+                    publish_acquisition_progress(1.0)
+
+            def resolve_audio_source():
+                return self.audio_source_resolver.resolve(
+                    request,
+                    progress_hook=acquisition_progress_hook,
+                )
+
+            def prompt_cookies_for_whisper_retry(cookie_exc: CookiesRequiredError) -> None:
+                """Main-thread cookies.txt prompt; worker never touches Tk."""
+                try:
+                    self.log_error("Whisper", cookie_exc.original or cookie_exc)
+                except Exception as log_exc:
+                    self._log_whisper_worker_event_failure("cookie log", log_exc)
+                confirmed = False
+                try:
+                    confirmed = bool(
+                        self.ui_confirm(
+                            "Cookies required",
+                            "This Whisper audio download may require cookies "
+                            "(age/consent/bot checks).\n"
+                            "Automatic browser-cookie retry did not finish "
+                            "successfully.\n\n"
+                            "Select a cookies.txt file to retry?",
+                        )
+                    )
+                except Exception as prompt_exc:
+                    self._log_whisper_worker_event_failure(
+                        "cookie prompt",
+                        prompt_exc,
+                    )
+                    raise AudioAcquisitionError(
+                        "Cookies prompt failed; Whisper audio download was not retried"
+                    ) from prompt_exc
+                if not confirmed:
+                    self._log_whisper_safely("Cookies selection declined.")
+                    raise AudioAcquisitionError(
+                        "Cookies selection declined; Whisper audio download was not retried"
+                    )
+                try:
+                    self.ui_select_cookies()
+                except Exception as select_exc:
+                    self._log_whisper_worker_event_failure(
+                        "cookie select",
+                        select_exc,
+                    )
+                    raise AudioAcquisitionError(
+                        "Cookies selection failed; Whisper audio download was not retried"
+                    ) from select_exc
+                if not self.cookies_path:
+                    self._log_whisper_safely("No cookies.txt selected.")
+                    raise AudioAcquisitionError(
+                        "No cookies.txt selected; Whisper audio download was not retried"
+                    )
+
+            on_phase(WhisperPhase.PREPARING_AUDIO)
+            try:
+                lease = resolve_audio_source()
+            except CookiesRequiredError as cookie_exc:
+                # Phase 3A already removed the first-attempt workspace before
+                # raising. Prompt once on the UI thread, then retry with a
+                # fresh workspace and the same immutable request.
+                with self._whisper_cookie_retry_lock:
+                    prompt_cookies_for_whisper_retry(cookie_exc)
+                    downloading_audio_announced = False
+                    last_acquisition_progress = None
+                    on_phase(WhisperPhase.PREPARING_AUDIO)
+                    try:
+                        lease = resolve_audio_source()
+                    except CookiesRequiredError as retry_exc:
+                        try:
+                            self.log_error(
+                                "Whisper",
+                                retry_exc.original or retry_exc,
+                            )
+                        except Exception as log_exc:
+                            self._log_whisper_worker_event_failure(
+                                "cookie retry log",
+                                log_exc,
+                            )
+                        raise AudioAcquisitionError(
+                            "Cookies still required after cookies.txt retry; "
+                            "Whisper audio download failed"
+                        ) from retry_exc
+
+            source_kind = (
+                lease.kind.value
+                if isinstance(lease.kind, SourceKind)
+                else str(lease.kind)
+            )
+            emit_snapshot(WhisperPhase.PREPARING_AUDIO, kind=source_kind)
+
+            with lease:
+                result = self.whisper_service.transcribe(
+                    request,
+                    lease.path,
+                    on_phase=on_phase,
+                )
+                effective_device = result.effective_device
+                fallback_used = bool(result.fallback_used)
+
+                # Finish fallible nonterminal work before publishing COMPLETE.
+                # Its failure is diagnostic only because verified result files
+                # already exist and must not be relabeled FAILED.
+                completion_log = (
+                    f"Whisper complete: {Path(result.text_path).name}, "
+                    f"{Path(result.srt_path).name}"
+                    + (" (CPU fallback)" if result.fallback_used else "")
+                )
+                try:
+                    self.log(completion_log)
+                except Exception as exc:
+                    self._log_whisper_worker_event_failure("completion log", exc)
+
+                status = self._whisper_phase_status_text(
+                    WhisperPhase.COMPLETE,
+                    result=result,
+                )
+                complete_snapshot = WhisperRunSnapshot(
+                    request_id=request_id,
+                    phase=WhisperPhase.COMPLETE,
+                    model_name=model_name,
+                    cache_root=cache_root,
+                    effective_device=effective_device,
+                    fallback_used=fallback_used,
+                    source_kind=source_kind,
+                    error_reason=None,
+                    updated_at=time.time(),
+                )
+                # Mark terminal ownership before helper calls. Any helper or
+                # fallback failure remains best-effort and cannot trigger FAILED.
+                terminal_published = True
+                self._publish_whisper_worker_terminal(
+                    card,
+                    request_id,
+                    complete_snapshot,
+                    status,
+                    "complete",
+                )
+        except Exception as exc:
+            if not terminal_published and request_id is not None:
+                error_reason = self._sanitize_whisper_error(exc)
+                # Preserve useful context in logs; status/snapshot stay sanitized.
+                try:
+                    self.log_error("Whisper", exc)
+                except Exception as log_exc:
+                    self._log_whisper_worker_event_failure(
+                        "failure log",
+                        log_exc,
+                    )
+                finally:
+                    # Generic classification is for legacy download diagnostics;
+                    # the sanitized Whisper boundary reason is authoritative here.
+                    self.last_error_reason = error_reason
+                status = self._whisper_phase_status_text(
+                    WhisperPhase.FAILED,
+                    error_reason=error_reason,
+                )
+                failed_snapshot = WhisperRunSnapshot(
+                    request_id=request_id,
+                    phase=WhisperPhase.FAILED,
+                    model_name=model_name,
+                    cache_root=cache_root,
+                    effective_device=effective_device,
+                    fallback_used=fallback_used,
+                    source_kind=source_kind,
+                    error_reason=error_reason,
+                    updated_at=time.time(),
+                )
+                terminal_published = True
+                self._publish_whisper_worker_terminal(
+                    card,
+                    request_id,
+                    failed_snapshot,
+                    status,
+                    "failed",
+                )
+            elif terminal_published:
+                self._log_whisper_worker_event_failure(
+                    "post-terminal work",
+                    exc,
+                )
+        finally:
+            # Always reset progress and clear busy through the main-thread queue.
+            # Request-aware busy clear: stale workers cannot re-enable a newer action.
+            if request_id is not None:
+                self._queue_whisper_worker_event(
+                    "card_progress_mode",
+                    (card, request_id, "reset"),
+                    lambda: self.queue_card_progress_mode(
+                        card,
+                        request_id,
+                        "reset",
+                    ),
+                )
+                self._queue_whisper_worker_event(
+                    "whisper_busy",
+                    (card, request_id, False),
+                    lambda: self.queue_whisper_busy(
+                        card,
+                        request_id,
+                        False,
+                    ),
+                )
+            try:
+                if lease is not None:
+                    lease.release()
+            except Exception:
+                pass
+
+    def _download_direct_media(
+        self,
+        card,
+        media_url: str,
+        headers: dict,
+        title: str,
+        *,
+        media_epoch: int | None = None,
+    ) -> None:
         folder = self.output_path
         if not folder:
             self.ui_warn('Folder Error', 'Select a folder first.')
             return
+        if media_epoch is None:
+            media_epoch = self.invalidate_verified_media(card)
         safe_title = sanitize_filename(title)
         outfile = unique_output_path(folder, safe_title, "mp4")
         self.last_action_kind = "media"
@@ -971,10 +2031,25 @@ class VideoDownloaderApp:
                     headers or {},
                     progress_hook=on_progress,
                 )
-                self.set_progress(1)
-                self.queue_card_progress(card, 1)
-                self.queue_card_status(card, "Complete", state="complete")
-                self.log(f"ffmpeg download complete: {outfile}")
+                verified_files = self._verify_download_outputs([outfile])
+                if len(verified_files) == 1:
+                    verified = verified_files[0]
+                    self.set_progress(1)
+                    self.queue_card_progress(card, 1)
+                    self.queue_card_status(card, "Complete", state="complete")
+                    self.log(
+                        f"ffmpeg download complete: {verified.path} "
+                        f"({verified.size:,} bytes)"
+                    )
+                    self.queue_verified_media(card, verified, media_epoch)
+                else:
+                    self.set_progress(0)
+                    self.queue_card_status(card, "Failed (Direct HLS)", state="failed")
+                    self.log(
+                        "Download verification failed: ffmpeg reported success, "
+                        "but Link2Vid could not confirm the final file exists."
+                    )
+                    self.log(f"Unverified output path: {outfile}")
             except Exception as exc:
                 self.set_progress(0)
                 self.queue_card_status(card, "Failed (Direct HLS)", state="failed")
@@ -984,7 +2059,7 @@ class VideoDownloaderApp:
 
         threading.Thread(target=run_ffmpeg, daemon=True).start()
 
-    def download_video(self, url, format_id, out_path, card=None, fmt_label=None):
+    def download_video(self, url, format_id, out_path, card=None, fmt_label=None, media_epoch=None):
         finished_logged = False
         saved_files = []
 
@@ -1063,6 +2138,7 @@ class VideoDownloaderApp:
                         ok = False
                     fmt_label = fallback_label
             if ok:
+                has_reported_outputs = bool(saved_files)
                 output_files = saved_files or self._recent_download_outputs(out_path, started_at)
                 verified_files = self._verify_download_outputs(output_files)
                 self.log(f"Output folder after download: {self._folder_snapshot(out_path)}")
@@ -1078,6 +2154,14 @@ class VideoDownloaderApp:
                         self.queue_card_progress(card, 1)
                         status = "Already downloaded" if all_preexisting else "Complete"
                         self.queue_card_status(card, status, state="complete")
+                        # Folder recency fallback is legacy UX evidence only. Whisper
+                        # provenance requires one exact path reported by this action.
+                        if (
+                            media_epoch is not None
+                            and has_reported_outputs
+                            and len(verified_files) == 1
+                        ):
+                            self.queue_verified_media(card, verified_files[0], media_epoch)
                 else:
                     ok = False
                     self.log(
@@ -1121,7 +2205,7 @@ class VideoDownloaderApp:
         except Exception:
             return []
 
-    def _verify_download_outputs(self, paths: list[str]) -> list[VerifiedOutput]:
+    def _verify_download_outputs(self, paths: list[str]) -> list[VerifiedMedia]:
         verified = []
         seen = set()
         for path in paths:
@@ -1144,7 +2228,13 @@ class VideoDownloaderApp:
                     f"parent_exists={parent_exists}"
                 )
                 if is_file and size and size > 0:
-                    verified.append(VerifiedOutput(str(file_path), size, stat.st_mtime))
+                    verified.append(
+                        VerifiedMedia(
+                            path=file_path,
+                            size=size,
+                            modified_at=stat.st_mtime,
+                        )
+                    )
             except Exception as exc:
                 self.log(f"Verify output error for {path}: {type(exc).__name__}: {exc}")
                 continue

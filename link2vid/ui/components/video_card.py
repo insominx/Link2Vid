@@ -9,6 +9,7 @@ import customtkinter as ctk
 FormatOption = tuple[str, str]
 OnDownload = Callable[["VideoCard", str], None]
 OnTranscript = Callable[["VideoCard", object | None], None]
+OnWhisper = Callable[["VideoCard", str], None]
 
 STATUS_COLORS = {
     "ready": ("#6b7280", "#9ca3af"),
@@ -16,6 +17,9 @@ STATUS_COLORS = {
     "complete": ("#15803d", "#45d483"),
     "failed": ("#b91c1c", "#ff6b6b"),
 }
+
+_DEFAULT_WHISPER_MODEL = "small"
+_WHISPER_UNAVAILABLE_LABEL = "—"
 
 
 def _default_format_options() -> list[FormatOption]:
@@ -34,19 +38,25 @@ class VideoCard(ctk.CTkFrame):
         metadata: str = "",
         format_options: Sequence[object] | None = None,
         transcript_options: Sequence[object] | None = None,
+        whisper_models: Sequence[str] | None = None,
         on_download: OnDownload | None = None,
         on_transcript: OnTranscript | None = None,
+        on_whisper: OnWhisper | None = None,
         **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
         self.on_download = on_download
         self.on_transcript = on_transcript
+        self.on_whisper = on_whisper
         self.title_text = title
         self.selected_format = ""
         self.selected_transcript = None
+        self.selected_whisper_model = ""
         self.transcript_available = True
+        self.whisper_available = False
         self.transcript_picker = None
         self.status_state = "ready"
+        self._progress_mode = "determinate"
 
         self.configure(corner_radius=12)
         self.grid_columnconfigure(1, weight=1)
@@ -88,7 +98,7 @@ class VideoCard(ctk.CTkFrame):
         progress_frame.grid(row=3, column=0, sticky="ew", pady=(6, 0))
         progress_frame.grid_columnconfigure(0, weight=1)
 
-        self.progress_bar = ctk.CTkProgressBar(progress_frame, height=6)
+        self.progress_bar = ctk.CTkProgressBar(progress_frame, height=6, mode="determinate")
         self.progress_bar.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.progress_bar.set(0)
 
@@ -133,6 +143,32 @@ class VideoCard(ctk.CTkFrame):
         )
         self.transcript_button.grid(row=3, column=0, pady=(8, 0), sticky="ew")
 
+        self.whisper_models = self._normalize_whisper_models(whisper_models)
+        self.whisper_available = bool(self.whisper_models)
+        whisper_values = list(self.whisper_models) if self.whisper_models else [_WHISPER_UNAVAILABLE_LABEL]
+        self.whisper_model_menu = ctk.CTkOptionMenu(
+            action_frame,
+            values=whisper_values,
+            command=self._on_whisper_model_change,
+        )
+        self.whisper_model_menu.grid(row=4, column=0, pady=(8, 0), sticky="ew")
+        if self.whisper_models:
+            initial = self._default_whisper_model(self.whisper_models)
+            self.whisper_model_menu.set(initial)
+            self.selected_whisper_model = initial
+        else:
+            self.whisper_model_menu.set(_WHISPER_UNAVAILABLE_LABEL)
+            self.selected_whisper_model = ""
+
+        self.whisper_button = ctk.CTkButton(
+            action_frame,
+            text="Whisper",
+            command=self._handle_whisper,
+            fg_color="#0f766e",
+            hover_color="#0d9488",
+        )
+        self.whisper_button.grid(row=5, column=0, pady=(8, 0), sticky="ew")
+
         self.set_status("Ready", state="ready")
         self.set_actions_enabled(True)
 
@@ -172,6 +208,19 @@ class VideoCard(ctk.CTkFrame):
         normalized[1:] = sorted(normalized[1:], key=lambda item: item[0].lower())
         return normalized, True
 
+    @staticmethod
+    def _normalize_whisper_models(models: Sequence[str] | None) -> list[str]:
+        if not models:
+            return []
+        # Exact upstream aliases only — never remap to quality presets.
+        return [str(alias) for alias in models]
+
+    @staticmethod
+    def _default_whisper_model(aliases: Sequence[str]) -> str:
+        if _DEFAULT_WHISPER_MODEL in aliases:
+            return _DEFAULT_WHISPER_MODEL
+        return aliases[0]
+
     def _on_format_change(self, value: str) -> None:
         if value in self.format_map:
             self.selected_format = self.format_map[value]
@@ -180,6 +229,10 @@ class VideoCard(ctk.CTkFrame):
         if value in self.transcript_map:
             self.selected_transcript = self.transcript_map[value]
             self.transcript_button_label.configure(text=value)
+
+    def _on_whisper_model_change(self, value: str) -> None:
+        if value in self.whisper_models:
+            self.selected_whisper_model = value
 
     def _open_transcript_picker(self) -> None:
         if not self.transcript_available:
@@ -270,13 +323,21 @@ class VideoCard(ctk.CTkFrame):
         if self.on_transcript:
             self.on_transcript(self, self.selected_transcript)
 
+    def _handle_whisper(self) -> None:
+        if self.on_whisper and self.whisper_available and self.selected_whisper_model:
+            self.on_whisper(self, self.selected_whisper_model)
+
     def set_actions_enabled(self, enabled: bool) -> None:
         download_state = "normal" if enabled and self.on_download else "disabled"
         transcript_state = "normal" if enabled and self.on_transcript and self.transcript_available else "disabled"
         transcript_picker_state = "normal" if enabled and self.transcript_available else "disabled"
+        whisper_state = "normal" if enabled and self.on_whisper and self.whisper_available else "disabled"
+        whisper_menu_state = "normal" if enabled and self.whisper_available else "disabled"
         self.download_button.configure(state=download_state)
         self.transcript_button.configure(state=transcript_state)
         self.transcript_button_label.configure(state=transcript_picker_state)
+        self.whisper_button.configure(state=whisper_state)
+        self.whisper_model_menu.configure(state=whisper_menu_state)
 
     def set_title(self, title: str) -> None:
         self.title_text = title
@@ -305,11 +366,51 @@ class VideoCard(ctk.CTkFrame):
         if color:
             self.status_label.configure(text_color=color)
 
+    def _stop_progress_animation(self) -> None:
+        self.progress_bar.stop()
+
+    def set_progress_mode(self, mode: str) -> None:
+        """Switch between determinate and indeterminate card progress.
+
+        Indeterminate uses CTk start/stop animation and never shows a fake percent.
+        """
+        normalized = str(mode).strip().lower()
+        if normalized not in ("determinate", "indeterminate"):
+            raise ValueError(f"Unsupported progress mode: {mode!r}")
+
+        self._stop_progress_animation()
+        self._progress_mode = normalized
+        self.progress_bar.configure(mode=normalized)
+        if normalized == "indeterminate":
+            self.progress_label.configure(text="")
+            self.progress_bar.start()
+        else:
+            # Preserve the current determinate value; callers use set_progress/reset.
+            percent = int(round(max(0.0, min(1.0, float(self.progress_bar.get()))) * 100))
+            self.progress_label.configure(text=f"{percent}%")
+
     def set_progress(self, value: float) -> None:
+        """Set determinate progress. Existing download callers remain unchanged."""
+        if self._progress_mode != "determinate":
+            self.set_progress_mode("determinate")
         clamped = max(0.0, min(1.0, value))
         self.progress_bar.set(clamped)
         percent = int(round(clamped * 100))
         self.progress_label.configure(text=f"{percent}%")
+
+    def reset_progress(self) -> None:
+        """Stop any animation and return to determinate 0%."""
+        self._stop_progress_animation()
+        self._progress_mode = "determinate"
+        self.progress_bar.configure(mode="determinate")
+        self.progress_bar.set(0)
+        self.progress_label.configure(text="0%")
+
+    def get_progress_mode(self) -> str:
+        return self._progress_mode
+
+    def get_selected_whisper_model(self) -> str:
+        return self.selected_whisper_model
 
     def set_thumbnail_image(self, image) -> None:
         self.thumbnail_label.configure(image=image, text="")

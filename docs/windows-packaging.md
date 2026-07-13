@@ -16,7 +16,7 @@ There is no valid `Link2Vid.exe` under `build/` after `build_windows.bat` finish
 
 **Build machine (Windows 10+ x64):**
 
-- Python 3.8+ with project dependencies installed (`setup_link2vid.bat` or equivalent venv + `pip install -r requirements.txt`)
+- Python 3.10+ with project dependencies installed (`setup_link2vid.bat` or equivalent venv + `pip install -r requirements.txt`)
 - PyInstaller is installed automatically by `build_windows.bat` from `packaging/requirements-build.txt`
 
 **End-user machine (frozen build):**
@@ -25,6 +25,8 @@ There is no valid `Link2Vid.exe` under `build/` after `build_windows.bat` finish
 - **JS runtime** — `deno`, `node`, or `bun` on PATH or in `<app_dir>/bin/` for reliable EJS challenge handling
 - **ffmpeg** — on PATH or in `<app_dir>/bin/` for HLS merges and Best (A+V) flows
 - Installed browsers — for automatic cookie extraction (same as dev mode)
+- Network access on first use of each Whisper model; weights are cached at `%LOCALAPPDATA%\Link2Vid\models`
+- Optional compatible NVIDIA driver/CUDA runtime for GPU transcription; Link2Vid selects CPU when CTranslate2 reports no CUDA device
 
 The build script copies `ffmpeg.exe` and `ffprobe.exe` from the builder's PATH into `release/Link2Vid/bin/` when available. If the builder lacks ffmpeg, the build still succeeds; place binaries manually before distributing.
 
@@ -61,7 +63,7 @@ This will:
 2. Build into `release/Link2Vid/`
 3. Add `Link2Vid.bat`, `README.txt`, and optional `developer.json`
 4. Stage ffmpeg/ffprobe into `bin/` when on the builder PATH
-5. Run an import smoke test
+5. Run an import smoke test, including Faster Whisper and its native/dynamic dependency closure
 6. Open `release/Link2Vid` in Explorer
 
 Post-build smoke (also run automatically by `build_windows.bat`):
@@ -83,6 +85,8 @@ Desktop shortcut: `create_link2vid_release_shortcut.ps1`
 ## Distribution
 
 Zip the entire `release/Link2Vid/` folder for a portable distribution. There is no installer or code signing in v1.
+
+Whisper model weights are deliberately not in that folder. Source and frozen builds share `%LOCALAPPDATA%\Link2Vid\models`, so distributing a new build does not duplicate models. A machine that has not cached the selected model must be online for its first transcription.
 
 Windows SmartScreen may warn on unsigned executables. Users can choose "More info" → "Run anyway", or you can code-sign in a follow-up release process.
 
@@ -115,6 +119,9 @@ Use `create_link2vid_release_shortcut.ps1`, or point a shortcut at `Link2Vid.bat
 | JS-runtime-required downloads fail, startup warning shown | no deno/node/bun | install runtime or place `deno.exe` in `bin/` |
 | HLS / merge fails | no ffmpeg | stage `ffmpeg.exe` + `ffprobe.exe` in `bin/` |
 | Selenium fallback fails | Chrome not installed | install Chrome |
+| Whisper controls are disabled | Faster Whisper native import/probe failed | run `Link2Vid.exe --smoke`; rebuild and inspect the first failed module |
+| First Whisper run is slow or fails offline | selected model is not cached | connect once and retry; keep `%LOCALAPPDATA%\Link2Vid\models` for later offline use |
+| Whisper reports a CUDA model-loading error | CTranslate2 reported a GPU, but its driver/runtime is incompatible | install a CTranslate2-compatible NVIDIA driver/runtime; these errors are surfaced rather than retried |
 | `developer.json` not loaded (frozen) | file not beside exe or in AppData | rebuild with repo-root `developer.json`, or copy to `release/Link2Vid/` or `%APPDATA%\Link2Vid\` |
 | `Failed to load Python DLL` under `build\` | ran a PyInstaller stub before cleanup, or old build folder | run `build_windows.bat` again; start via `release\Link2Vid\Link2Vid.bat` |
 | Antivirus quarantine | unsigned PyInstaller build | restore from AV; consider code signing |
@@ -122,5 +129,6 @@ Use `create_link2vid_release_shortcut.ps1`, or point a shortcut at `Link2Vid.bat
 ## Maintainer notes
 
 - Bundle composition lives in `packaging/link2vid.spec` (committed; exception in `.gitignore`).
+- The spec collects the Faster Whisper, CTranslate2, PyAV, ONNX Runtime, Tokenizers, and Hugging Face import/data/native closure. Do not add model weights or NVIDIA runtime packages to the portable payload.
 - When adding runtime Python dependencies, update the spec hidden imports and `tests/test_packaging_contract.py` together.
 - Build outputs (`release/`, `build/`) stay local and are gitignored.

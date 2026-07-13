@@ -8,10 +8,11 @@ Link2Vid is a desktop application for downloading videos from various platforms 
 - Select and preview available video formats
 - Choose download directory
 - Download transcript/caption files without downloading video/audio media
+- Create local speech-to-text transcripts with Faster Whisper (`.txt` and `.srt`)
 - Progress bar and log output
 
 ## Requirements
-- Python 3.8+
+- Python 3.10+
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 - [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)
 
@@ -35,7 +36,13 @@ pip install -r requirements.txt
 4. Click **Fetch** to load result cards and available formats.
 5. Scroll the card list; use **Load more** for large playlists.
 6. Choose a download folder in the footer.
-7. Click **Download** on a card to save media, or **Transcript** to save caption files only.
+7. Click **Download** to save media, **Transcript** to save provider captions, or choose a model and click **Whisper** to transcribe speech locally.
+
+## Local Whisper transcription
+
+Whisper is independent of provider captions. It reuses the exact media saved by a successful download when available; otherwise it downloads temporary best-quality audio and removes that temporary workspace after the run. Each successful action writes collision-safe `<title>.whisper.<language>.txt` and `<title>.whisper.<language>.srt` files to the selected output folder.
+
+Model weights are downloaded on first use and cached outside the app at `%LOCALAPPDATA%\Link2Vid\models` (or `~/.link2vid/models` when `LOCALAPPDATA` is unavailable). They are not included in portable builds, so first use needs network access and sufficient disk space. Link2Vid uses CUDA when CTranslate2 reports an available GPU and otherwise uses CPU. CUDA model-loading errors are reported rather than silently retried; acceleration requires a working driver/runtime compatible with CTranslate2.
 
 ## Documentation
 

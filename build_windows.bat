@@ -1,5 +1,5 @@
 @echo off
-setlocal EnableDelayedExpansion
+setlocal
 set "SCRIPT_DIR=%~dp0"
 set "RELEASE_DIR=release\Link2Vid"
 set "RELEASE_EXE=%RELEASE_DIR%\Link2Vid.exe"
@@ -8,6 +8,14 @@ pushd "%SCRIPT_DIR%"
 set "PYTHON=python"
 if exist "%SCRIPT_DIR%.venv\Scripts\python.exe" (
   set "PYTHON=%SCRIPT_DIR%.venv\Scripts\python.exe"
+)
+
+call "%SCRIPT_DIR%packaging\check_python.bat" "%PYTHON%"
+set "PYTHON_CHECK_EXIT=%ERRORLEVEL%"
+if not "%PYTHON_CHECK_EXIT%"=="0" (
+  echo [ERROR] Build stopped before dependency installation and PyInstaller.
+  popd
+  exit /b %PYTHON_CHECK_EXIT%
 )
 
 echo [Link2Vid] Installing build dependencies...

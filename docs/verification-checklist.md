@@ -28,6 +28,17 @@ Automated baseline: `python -m pytest tests/`
 - No tracks available — card shows clear failed/unavailable state; logs explain why.
 - Auth/consent gating — cookie retry and `cookies.txt` prompt still work.
 
+## Local Whisper
+
+- Model list probes without downloading weights; a missing/broken native dependency disables only Whisper controls.
+- First use downloads the selected model to `%LOCALAPPDATA%\Link2Vid\models`; a later offline run succeeds from that cache.
+- A successful media download followed by Whisper reuses that exact unchanged file.
+- Whisper without a prior download acquires temporary `bestaudio`; the action-owned temporary workspace is removed after success and failure.
+- Auth-required temporary audio gets one `cookies.txt` prompt/retry.
+- Successful transcription writes non-empty, matching `<title>.whisper.<language>.txt` and `.srt` files; repeated runs use collision suffixes.
+- With compatible NVIDIA CUDA, diagnostics report `effective_device: cuda`. With no CUDA device reported by CTranslate2, the run selects CPU and records fallback. CUDA model-loading failures are surfaced rather than retried.
+- The card remains responsive, blocks overlapping actions, and ignores stale completion/progress events from an older request.
+
 ## Dependencies
 
 - ffmpeg missing — warning before merge-required downloads.
@@ -38,11 +49,12 @@ Automated baseline: `python -m pytest tests/`
 
 Copy Diagnostics includes at minimum:
 
-- URL, action kind (media vs transcript), selected format
+- URL, action kind (media, provider transcript, or Whisper), selected format
 - yt-dlp version, ffmpeg path, JS runtime detection
 - Cookies mode and browser (when used)
 - Last error and classified reason
 - Recent log tail
+- For the latest Whisper run: phase, model, cache-root category, effective device, fallback flag, source kind, and sanitized error reason (no local paths, secrets, or traceback)
 
 ## UI stability
 
@@ -77,3 +89,5 @@ Additional frozen-only checks:
 - Copy Diagnostics reports ffmpeg under `\bin\` when `bin/ffmpeg.exe` is staged.
 - `developer.json` beside `Link2Vid.exe` (or in `%APPDATA%\Link2Vid\`) prefills `default_url` when configured; bootstrap log shows resolved path.
 - One HLS or Best (A+V) download succeeds with staged ffmpeg and a JS runtime (system or `bin/deno.exe`).
+- `Link2Vid.exe --smoke` imports the Faster Whisper native/dynamic dependency closure.
+- A frozen CPU transcription completes and writes `.txt` plus `.srt`; model weights remain in the shared external cache rather than `_internal/`.

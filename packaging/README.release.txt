@@ -14,6 +14,14 @@ FILES
   bin\             - optional ffmpeg / deno sidecars
   _internal\       - bundled Python libraries (required; do not delete)
 
+WHISPER TRANSCRIPTION
+  The first use of each model downloads weights to:
+    %LOCALAPPDATA%\Link2Vid\models
+  Model weights are not bundled in this folder. Keep that cache for offline use.
+  A compatible NVIDIA setup can accelerate transcription. Link2Vid selects CPU
+  when CTranslate2 reports no CUDA device; CUDA loading errors are shown.
+  Successful runs save both .txt and .srt files.
+
 BUILD AGAIN
   From the repo root: build_windows.bat
   Temporary PyInstaller files live under build\ and are not runnable.

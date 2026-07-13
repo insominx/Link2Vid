@@ -8,18 +8,20 @@ set "PYTHON=python"
 if exist "%SCRIPT_DIR%.venv\Scripts\python.exe" (
   set "PYTHON=%SCRIPT_DIR%.venv\Scripts\python.exe"
 ) else (
-  where python >nul 2>&1
-  if errorlevel 1 (
-    echo [ERROR] Python not found. Install Python 3.8+ and add it to PATH.
-    popd
-    exit /b 1
-  )
   echo [INFO] No .venv detected. Using system Python.
   echo [INFO] To create one: python -m venv .venv
 )
 
+call "%SCRIPT_DIR%packaging\check_python.bat" "%PYTHON%"
+set "PYTHON_CHECK_EXIT=%ERRORLEVEL%"
+if not "%PYTHON_CHECK_EXIT%"=="0" (
+  echo [ERROR] Setup stopped before dependency installation.
+  popd
+  exit /b %PYTHON_CHECK_EXIT%
+)
+
 echo [Link2Vid] Installing Python dependencies (upgrade to latest)...
-%PYTHON% -m pip install -U -r requirements.txt
+"%PYTHON%" -m pip install -U -r requirements.txt
 if errorlevel 1 (
   echo [ERROR] Failed to install Python dependencies.
   popd

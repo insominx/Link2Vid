@@ -36,11 +36,19 @@ def run() -> None:
         label = getattr(transcript, "label", None) or "auto-select"
         log_drawer.append(f"Queued transcript: {card.get_title()} [{label}]")
 
+    def handle_whisper(card: VideoCard, model_name: str) -> None:
+        card.set_status(f"Queued Whisper ({model_name})")
+        card.set_progress_mode("indeterminate")
+        log_drawer.append(f"Queued Whisper: {card.get_title()} [{model_name}]")
+
     format_options = [
         ("Best (A+V)", "bestvideo+bestaudio/best"),
         ("Best video", "bestvideo"),
         ("Best audio", "bestaudio"),
     ]
+
+    # Exact Faster Whisper aliases for the demo; orchestration supplies these in-app.
+    whisper_models = ["tiny", "base", "small", "medium", "large-v3"]
 
     samples = [
         {
@@ -64,8 +72,10 @@ def run() -> None:
             metadata=item["meta"],
             format_options=format_options,
             transcript_options=None,
+            whisper_models=whisper_models,
             on_download=handle_download,
             on_transcript=handle_transcript,
+            on_whisper=handle_whisper,
         )
         card.pack(fill="x", padx=8, pady=8)
 
