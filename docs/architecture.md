@@ -13,7 +13,7 @@ Current layout and data flow for the desktop app. For media discovery details (S
 - `video_downloader.py` — `main()` parses `--smoke`, calls `bootstrap_runtime()`, then lazy-imports the UI or runs headless import smoke.
 - `link2vid/core/runtime.py` — frozen/dev `app_dir`, `developer.json` search order, optional `<app_dir>/bin` PATH prepend (entry-only; not imported from other core modules).
 - `link2vid/ui/main_window.py` — main window, fetch/download orchestration, UI event queue.
-- `link2vid/ui/components/` — `VideoCard`, `LogDrawer`, `FooterBar`.
+- `link2vid/ui/components/` — `VideoCard`, `BatchBar`, `LogDrawer`, `FooterBar`.
 - `link2vid/ui/thumbnail_loader.py` — background thumbnail fetch/resize.
 
 Windows portable builds: `build_windows.bat` → `release/Link2Vid/`; launch via `Link2Vid.bat`. See [windows-packaging.md](./windows-packaging.md).
@@ -60,6 +60,14 @@ Per card, user picks a format (Best A+V / Best video / Best audio) or Transcript
 
 Output names use `sanitize_filename` + `unique_output_path` (collision suffix, no silent overwrite).
 
+## Batch selection and downloads
+
+`VideoDownloaderApp` owns fetched-entry selection and per-entry format/transcript choices, keyed by entry index for one fetch session. `VideoCard` checkboxes and menus are input/display only. This keeps selection authoritative across **Load more** without constructing every card; an unrendered entry uses the same session-default format as a newly rendered card.
+
+At batch start the app freezes the selected entries' resolved URLs and choices. One daemon worker then calls the existing `download_video` or `download_transcript` runner sequentially, hopping to the UI thread for per-item pre-flight and widget state. Failures are counted and isolated, and **Stop** takes effect between items. Batch provider transcripts never invoke Whisper.
+
+`core.helpers.entry_watch_url` is the canonical pure resolver for per-entry watch URLs. Multi-entry sessions never fall back to the playlist/channel URL in the address bar; an unresolvable entry is skipped instead.
+
 ## Local Whisper flow
 
 Each card exposes a model selector and a Whisper action independently of provider-caption availability.
@@ -86,6 +94,7 @@ Model weights live at `%LOCALAPPDATA%\Link2Vid\models` (fallback `~/.link2vid/mo
 - Tk/CTk widgets are updated only on the main thread.
 - Background work: fetch, downloads, Whisper audio acquisition/transcription, thumbnails, Selenium.
 - Pattern: workers enqueue `(action, payload)` tuples; `process_ui_queue` drains them on the UI thread.
+- Batch workers iterate frozen `BatchItem` values and never read live entry/selection maps.
 
 ## Local configuration
 

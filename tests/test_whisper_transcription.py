@@ -143,8 +143,13 @@ class TestWhisperModelAdapter(unittest.TestCase):
         with self.assertRaises(wt.InvalidWhisperModelError):
             wt.validate_model_name("SMALL", models=aliases)
 
-    def test_default_model_name_prefers_small(self):
-        self.assertEqual(wt.default_model_name(["tiny", "small", "medium"]), "small")
+    def test_default_model_name_prefers_large_v3(self):
+        self.assertEqual(
+            wt.default_model_name(
+                ["tiny", "small", "large-v3", "distil-large-v3.5"]
+            ),
+            "large-v3",
+        )
         self.assertEqual(wt.default_model_name(["tiny", "base"]), "tiny")
         with self.assertRaises(wt.InvalidWhisperModelError):
             wt.default_model_name([])

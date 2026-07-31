@@ -8,6 +8,7 @@ Link2Vid is a desktop application for downloading videos from various platforms 
 - Select and preview available video formats
 - Choose download directory
 - Download transcript/caption files without downloading video/audio media
+- Select playlist/channel entries and batch-download media or provider captions
 - Create local speech-to-text transcripts with Faster Whisper (`.txt` and `.srt`)
 - Progress bar and log output
 
@@ -34,15 +35,20 @@ pip install -r requirements.txt
    Or directly: `pythonw video_downloader.py`
 3. Paste a video or playlist URL into the input field.
 4. Click **Fetch** to load result cards and available formats.
-5. Scroll the card list; use **Load more** for large playlists.
+5. Use each card's checkbox, **Select all**, or **Select none** to choose entries. Selection covers the full fetched list, including entries not yet revealed by **Load more**.
 6. Choose a download folder in the footer.
-7. Click **Download** to save media, **Transcript** to save provider captions, or choose a model and click **Whisper** to transcribe speech locally.
+7. Click **Download selected** to save each selected media item or **Transcript selected** to save provider captions for each selected item. Batch actions run sequentially; **Stop** finishes the current item and skips the rest.
+8. For one card, click **Download** or **Transcript**, or choose a model and click **Whisper** to transcribe speech locally.
+
+Batch actions produce the same individual files as the corresponding per-card actions; they never create a combined archive or media file. Batch transcripts use provider captions and do not run Whisper.
 
 ## Local Whisper transcription
 
 Whisper is independent of provider captions. It reuses the exact media saved by a successful download when available; otherwise it downloads temporary best-quality audio and removes that temporary workspace after the run. Each successful action writes collision-safe `<title>.whisper.<language>.txt` and `<title>.whisper.<language>.srt` files to the selected output folder.
 
 Model weights are downloaded on first use and cached outside the app at `%LOCALAPPDATA%\Link2Vid\models` (or `~/.link2vid/models` when `LOCALAPPDATA` is unavailable). They are not included in portable builds, so first use needs network access and sufficient disk space. Link2Vid uses CUDA when CTranslate2 reports an available GPU and otherwise uses CPU. CUDA model-loading errors are reported rather than silently retried; acceleration requires a working driver/runtime compatible with CTranslate2.
+
+When available, **large-v3** is selected by default for maximum general-purpose transcription quality. It requires a larger model download and more compute than distilled or smaller models; choose `distil-large-v3.5` when English-only speed is more important.
 
 ## Documentation
 

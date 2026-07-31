@@ -10,6 +10,9 @@ FormatOption = tuple[str, str]
 OnDownload = Callable[["VideoCard", str], None]
 OnTranscript = Callable[["VideoCard", object | None], None]
 OnWhisper = Callable[["VideoCard", str], None]
+OnSelectionChange = Callable[["VideoCard", bool], None]
+OnFormatChange = Callable[["VideoCard", str], None]
+OnTranscriptChange = Callable[["VideoCard", object | None], None]
 
 STATUS_COLORS = {
     "ready": ("#6b7280", "#9ca3af"),
@@ -18,7 +21,7 @@ STATUS_COLORS = {
     "failed": ("#b91c1c", "#ff6b6b"),
 }
 
-_DEFAULT_WHISPER_MODEL = "small"
+_DEFAULT_WHISPER_MODEL = "large-v3"
 _WHISPER_UNAVAILABLE_LABEL = "—"
 
 
@@ -42,12 +45,19 @@ class VideoCard(ctk.CTkFrame):
         on_download: OnDownload | None = None,
         on_transcript: OnTranscript | None = None,
         on_whisper: OnWhisper | None = None,
+        selected: bool = True,
+        on_selection_change: OnSelectionChange | None = None,
+        on_format_change: OnFormatChange | None = None,
+        on_transcript_change: OnTranscriptChange | None = None,
         **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
         self.on_download = on_download
         self.on_transcript = on_transcript
         self.on_whisper = on_whisper
+        self.on_selection_change = on_selection_change
+        self.on_format_change = on_format_change
+        self.on_transcript_change = on_transcript_change
         self.title_text = title
         self.selected_format = ""
         self.selected_transcript = None
@@ -59,16 +69,26 @@ class VideoCard(ctk.CTkFrame):
         self._progress_mode = "determinate"
 
         self.configure(corner_radius=12)
-        self.grid_columnconfigure(1, weight=1)
+        self.grid_columnconfigure(2, weight=1)
+
+        self.selection_var = ctk.BooleanVar(value=bool(selected))
+        self.select_checkbox = ctk.CTkCheckBox(
+            self,
+            text="",
+            width=24,
+            variable=self.selection_var,
+            command=self._on_selection_toggle,
+        )
+        self.select_checkbox.grid(row=0, column=0, rowspan=3, padx=(12, 4), pady=12)
 
         self.thumbnail_frame = ctk.CTkFrame(self, width=120, height=72, corner_radius=8)
-        self.thumbnail_frame.grid(row=0, column=0, rowspan=3, padx=12, pady=12, sticky="w")
+        self.thumbnail_frame.grid(row=0, column=1, rowspan=3, padx=(4, 12), pady=12, sticky="w")
         self.thumbnail_frame.grid_propagate(False)
         self.thumbnail_label = ctk.CTkLabel(self.thumbnail_frame, text="Thumbnail")
         self.thumbnail_label.place(relx=0.5, rely=0.5, anchor="center")
 
         info_frame = ctk.CTkFrame(self, fg_color="transparent")
-        info_frame.grid(row=0, column=1, rowspan=3, sticky="nsew", padx=(0, 12), pady=12)
+        info_frame.grid(row=0, column=2, rowspan=3, sticky="nsew", padx=(0, 12), pady=12)
         info_frame.grid_columnconfigure(0, weight=1)
 
         self.title_label = ctk.CTkLabel(
@@ -106,7 +126,7 @@ class VideoCard(ctk.CTkFrame):
         self.progress_label.grid(row=0, column=1, sticky="e")
 
         action_frame = ctk.CTkFrame(self, fg_color="transparent")
-        action_frame.grid(row=0, column=2, rowspan=3, padx=(0, 12), pady=12, sticky="e")
+        action_frame.grid(row=0, column=3, rowspan=3, padx=(0, 12), pady=12, sticky="e")
         action_frame.grid_columnconfigure(0, weight=1)
 
         self.format_options = self._normalize_format_options(format_options)
@@ -224,11 +244,27 @@ class VideoCard(ctk.CTkFrame):
     def _on_format_change(self, value: str) -> None:
         if value in self.format_map:
             self.selected_format = self.format_map[value]
+            if self.on_format_change:
+                self.on_format_change(self, self.selected_format)
 
     def _on_transcript_change(self, value: str) -> None:
         if value in self.transcript_map:
             self.selected_transcript = self.transcript_map[value]
             self.transcript_button_label.configure(text=value)
+            if self.on_transcript_change:
+                self.on_transcript_change(self, self.selected_transcript)
+
+    def _on_selection_toggle(self) -> None:
+        if self.on_selection_change:
+            self.on_selection_change(self, self.is_selected())
+
+    def is_selected(self) -> bool:
+        return bool(self.selection_var.get())
+
+    def set_selected(self, value: bool, *, notify: bool = False) -> None:
+        self.selection_var.set(bool(value))
+        if notify and self.on_selection_change:
+            self.on_selection_change(self, bool(value))
 
     def _on_whisper_model_change(self, value: str) -> None:
         if value in self.whisper_models:

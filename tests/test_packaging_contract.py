@@ -102,6 +102,12 @@ class TestPackagingContract(unittest.TestCase):
         self.assertIn("release\\Link2Vid", text)
         self.assertIn("Link2Vid.bat", text)
 
+    def test_build_script_stages_real_ffmpeg_binaries(self):
+        text = BUILD_BAT.read_text(encoding="utf-8")
+        self.assertIn("%ChocolateyInstall%\\lib\\ffmpeg\\tools\\ffmpeg\\bin\\ffmpeg.exe", text)
+        self.assertIn('"%RELEASE_DIR%\\bin\\ffmpeg.exe" -version', text)
+        self.assertIn('"%RELEASE_DIR%\\bin\\ffprobe.exe" -version', text)
+
 
 if __name__ == "__main__":
     unittest.main()

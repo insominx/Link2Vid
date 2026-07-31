@@ -3,6 +3,7 @@ from __future__ import annotations
 import customtkinter as ctk
 from tkinter import TclError, filedialog, messagebox
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 import math
 import threading
 import queue
@@ -42,6 +43,7 @@ from ..core import (
     classify_error,
     get_error_guidance,
     download_with_ffmpeg,
+    entry_watch_url,
     get_format_options,
     get_yt_dlp_version,
     normalize_url,
@@ -53,7 +55,7 @@ from ..core import (
 )
 from ..core.extractors import build_media_entries, title_from_page_url
 from ..core.runtime import model_cache_dir
-from .components import FooterBar, LogDrawer, VideoCard, prompt_credentials
+from .components import BatchBar, FooterBar, LogDrawer, VideoCard, prompt_credentials
 from .thumbnail_loader import ThumbnailLoader
 
 # Card status labels for Whisper phases (unknown-duration work stays indeterminate).
@@ -79,6 +81,37 @@ _WHISPER_INDETERMINATE_PHASES = frozenset(
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+
+@dataclass
+class BatchPromptPolicy:
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    cookies_answer: bool | None = None
+    format_fallback_answer: bool | None = None
+    ffmpeg_answer: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchItem:
+    index: int
+    title: str
+    url: str
+    format_id: str | None
+    fmt_label: str | None
+    transcript_track: object | None
+
+
+@dataclass
+class BatchRun:
+    kind: str
+    items: tuple[BatchItem, ...]
+    generation: int
+    folder: str
+    cancel: threading.Event = field(default_factory=threading.Event)
+    completed: int = 0
+    failed: int = 0
+    skipped: int = 0
+    default_format_count: int = 0
 
 
 def format_duration_text(duration) -> str | None:
@@ -137,8 +170,16 @@ class VideoDownloaderApp:
         self.root.geometry('1100x800')
         self.root.minsize(900, 700)
         self.video_entries = []
+        self.entries_generation = 0
         self.cards = []
         self.card_entries = {}
+        self.selected_entry_indexes: set[int] = set()
+        self.entry_format_by_index: dict[int, str] = {}
+        self.entry_transcript_by_index: dict[int, object | None] = {}
+        self.card_index_by_card: dict = {}
+        self.card_by_index: dict[int, object] = {}
+        self.batch_run: BatchRun | None = None
+        self.batch_prompt_policy: BatchPromptPolicy | None = None
         self.format_options = get_format_options()
         self.format_label_map = {opt["format"]: opt["label"] for opt in self.format_options}
         self.format_label_map.setdefault("best", "Best (single file)")
@@ -241,9 +282,9 @@ class VideoDownloaderApp:
         )
         self.fetch_btn.pack(side="right", padx=(0, 10))
 
-        results_frame = ctk.CTkFrame(main_frame)
-        results_frame.pack(fill="both", expand=True, pady=(0, 16))
-        self.results_scroll = ctk.CTkScrollableFrame(results_frame)
+        self.results_frame = ctk.CTkFrame(main_frame)
+        self.results_frame.pack(fill="both", expand=True, pady=(0, 16))
+        self.results_scroll = ctk.CTkScrollableFrame(self.results_frame)
         self.results_scroll.pack(fill="both", expand=True, padx=6, pady=6)
         self.results_state = ctk.CTkLabel(
             self.results_scroll,
@@ -257,6 +298,16 @@ class VideoDownloaderApp:
             command=self.load_more,
             height=32,
         )
+
+        self.batch_bar = BatchBar(
+            main_frame,
+            on_select_all=self.select_all_entries,
+            on_select_none=self.select_no_entries,
+            on_download_selected=self.start_batch_media,
+            on_transcript_selected=self.start_batch_transcript,
+            on_cancel=self.cancel_batch,
+        )
+        self.batch_bar.pack_forget()
 
         if self.dev_defaults.get('cookies_path'):
             self.cookies_path = self.dev_defaults.get('cookies_path')
@@ -384,6 +435,43 @@ class VideoDownloaderApp:
             return "fallback"
         return "continue"
 
+    def confirm_cookies_retry(self, context: str) -> bool:
+        noun = "transcript" if context == "transcript" else "video"
+        message = (
+            f"This {noun} may require cookies (age/consent/bot checks).\n"
+            "Automatic browser-cookie retry did not finish successfully.\n\n"
+            "Select a cookies.txt file to retry?"
+        )
+        policy = self.batch_prompt_policy
+        if policy is None:
+            return self.ui_confirm("Cookies required", message)
+        with policy.lock:
+            if policy.cookies_answer is None:
+                policy.cookies_answer = self.ui_confirm("Cookies required", message)
+            return policy.cookies_answer
+
+    def confirm_format_fallback(self) -> bool:
+        message = (
+            "The selected format is not available for this video.\n"
+            "Retry with Best (single file)?"
+        )
+        policy = self.batch_prompt_policy
+        if policy is None:
+            return self.ui_confirm("Format unavailable", message)
+        with policy.lock:
+            if policy.format_fallback_answer is None:
+                policy.format_fallback_answer = self.ui_confirm("Format unavailable", message)
+            return policy.format_fallback_answer
+
+    def confirm_ffmpeg_fallback(self, fmt_label: str) -> str:
+        policy = self.batch_prompt_policy
+        if policy is None:
+            return self.ui_ffmpeg_fallback(fmt_label)
+        with policy.lock:
+            if policy.ffmpeg_answer is None:
+                policy.ffmpeg_answer = self.ui_ffmpeg_fallback(fmt_label)
+            return policy.ffmpeg_answer
+
     def ui_warn(self, title: str, message: str) -> None:
         self.run_on_ui_thread(lambda: messagebox.showwarning(title, message))
 
@@ -415,7 +503,8 @@ class VideoDownloaderApp:
                     self.progress.set(payload)
                     self.progress_bar.set(payload)
                 elif action == "results":
-                    self.video_entries = payload
+                    self.video_entries = self._sanitize_entries(payload)
+                    self.entries_generation += 1
                     self.populate_cards()
                 elif action == "results_state":
                     self.set_results_state(payload)
@@ -482,7 +571,7 @@ class VideoDownloaderApp:
         if aliases:
             self._log_whisper_safely(
                 f"Whisper models available: {len(aliases)} "
-                f"(default preference: small when present)."
+                f"(default preference: large-v3 when present)."
             )
         else:
             self._log_whisper_safely(
@@ -912,6 +1001,8 @@ class VideoDownloaderApp:
             text="Fetching..." if self.is_fetching else "Fetch",
         )
         self.update_card_buttons(has_folder)
+        if hasattr(self, "batch_bar"):
+            self._refresh_batch_bar()
 
     # ──────────────────────────────────────────────────────────
     # Core flow
@@ -1048,10 +1139,18 @@ class VideoDownloaderApp:
                 self.log(f"[ffmpeg] {elapsed_text} elapsed")
 
     def clear_results(self):
+        if self.batch_run is not None:
+            self.batch_run.cancel.set()
+            self.batch_bar.set_status("Stopping after current item…")
         for card in self.cards:
             card.destroy()
         self.cards = []
         self.card_entries = {}
+        self.selected_entry_indexes.clear()
+        self.entry_format_by_index.clear()
+        self.entry_transcript_by_index.clear()
+        self.card_index_by_card.clear()
+        self.card_by_index.clear()
         self.busy_cards.clear()
         self.verified_media_by_card.clear()
         self._verified_media_epoch_by_card.clear()
@@ -1061,6 +1160,16 @@ class VideoDownloaderApp:
         self.rendered_count = 0
         if self.load_more_button.winfo_manager():
             self.load_more_button.pack_forget()
+        self.batch_bar.pack_forget()
+
+    def _sanitize_entries(self, entries) -> list[dict]:
+        raw_entries = list(entries or [])
+        sanitized = [entry for entry in raw_entries if isinstance(entry, dict)]
+        dropped = len(raw_entries) - len(sanitized)
+        if dropped:
+            suffix = "entry" if dropped == 1 else "entries"
+            self.log(f"Dropped {dropped} unusable {suffix}.")
+        return sanitized
 
     def set_results_state(self, text: str):
         if text:
@@ -1093,6 +1202,11 @@ class VideoDownloaderApp:
             self.set_results_state("No videos found or unsupported site.")
             self.log("No videos found.")
             return
+        self.selected_entry_indexes = set(range(len(self.video_entries)))
+        self.entry_format_by_index.clear()
+        self.entry_transcript_by_index.clear()
+        self.batch_bar.pack(fill="x", pady=(0, 12), before=self.results_frame)
+        self._refresh_batch_bar()
         self.set_results_state("")
         self.render_next_batch()
         self.log(f"Found {len(self.video_entries)} video(s).")
@@ -1105,7 +1219,7 @@ class VideoDownloaderApp:
 
         start = self.rendered_count
         end = min(start + self.batch_size, len(self.video_entries))
-        for entry in self.video_entries[start:end]:
+        for index, entry in enumerate(self.video_entries[start:end], start=start):
             title = entry.get('title', 'No Title')
             metadata = self.build_metadata(entry)
             source_label = self.get_source_label(entry)
@@ -1120,12 +1234,18 @@ class VideoDownloaderApp:
                 on_download=self.handle_card_download,
                 on_transcript=self.handle_card_transcript,
                 on_whisper=self.handle_card_whisper,
+                selected=index in self.selected_entry_indexes,
+                on_selection_change=self.handle_card_selection_change,
+                on_format_change=self.handle_card_format_change,
+                on_transcript_change=self.handle_card_transcript_change,
             )
             card.pack(fill="x", padx=8, pady=8)
             if transcript_options == []:
                 card.set_status("No transcript tracks", state="ready")
             self.cards.append(card)
             self.card_entries[card] = entry
+            self.card_index_by_card[card] = index
+            self.card_by_index[index] = card
             placeholder = self.get_placeholder_image(source_label)
             card.set_thumbnail_image(self.make_ctk_image(placeholder))
             self.queue_thumbnail(card, entry, source_label)
@@ -1135,6 +1255,66 @@ class VideoDownloaderApp:
             self.load_more_button.pack(pady=(8, 12))
 
         self.update_card_buttons(bool(self.output_path))
+
+    def handle_card_selection_change(self, card, selected: bool) -> None:
+        index = self.card_index_by_card.get(card)
+        if index is None:
+            return
+        if selected:
+            self.selected_entry_indexes.add(index)
+        else:
+            self.selected_entry_indexes.discard(index)
+        self._refresh_batch_bar()
+
+    def select_all_entries(self) -> None:
+        self.selected_entry_indexes = set(range(len(self.video_entries)))
+        self._refresh_batch_bar()
+
+    def select_no_entries(self) -> None:
+        self.selected_entry_indexes.clear()
+        self._refresh_batch_bar()
+
+    def _selected_indexes_ordered(self) -> list[int]:
+        return sorted(self.selected_entry_indexes)
+
+    def _refresh_batch_bar(self) -> None:
+        for index, card in self.card_by_index.items():
+            card.set_selected(index in self.selected_entry_indexes, notify=False)
+        self.batch_bar.set_selection_summary(
+            len(self.selected_entry_indexes),
+            len(self.video_entries),
+        )
+        self.batch_bar.set_enabled(
+            bool(self.output_path)
+            and bool(self.video_entries)
+            and not self.is_fetching
+            and self.batch_run is None
+        )
+
+    def handle_card_format_change(self, card, format_id: str) -> None:
+        index = self.card_index_by_card.get(card)
+        if index is not None:
+            self.entry_format_by_index[index] = format_id
+
+    def handle_card_transcript_change(self, card, track) -> None:
+        index = self.card_index_by_card.get(card)
+        if index is not None:
+            self.entry_transcript_by_index[index] = track
+
+    def format_for_index(self, index: int) -> str:
+        return self.entry_format_by_index.get(index, self.format_options[0]["format"])
+
+    def transcript_track_for_index(self, index: int):
+        return self.entry_transcript_by_index.get(index)
+
+    def entry_url_for_entry(self, entry) -> str | None:
+        resolved = entry_watch_url(entry)
+        if resolved:
+            return resolved
+        if len(self.video_entries) <= 1:
+            fallback = self.url_entry.get().strip()
+            return fallback or None
+        return None
 
     def get_transcript_options(self, entry):
         if not isinstance(entry, dict):
@@ -1259,6 +1439,237 @@ class VideoDownloaderApp:
         for card in self.cards:
             card.set_actions_enabled(has_folder and card not in self.busy_cards)
 
+    def _freeze_batch_items(self, kind: str) -> tuple[tuple[BatchItem, ...], int, int]:
+        items: list[BatchItem] = []
+        skipped = 0
+        default_format_count = 0
+        for index in self._selected_indexes_ordered():
+            if index < 0 or index >= len(self.video_entries):
+                skipped += 1
+                self.log(f"Batch {kind} skipped: index out of range ({index}).")
+                continue
+            entry = self.video_entries[index]
+            title = str(entry.get("title") or "Video")
+            if entry.get("_ffmpeg_headers"):
+                skipped += 1
+                self.log(
+                    f"Batch {kind} skipped: direct media not supported in batch ({title})."
+                )
+                continue
+            url = self.entry_url_for_entry(entry)
+            if url is None:
+                skipped += 1
+                self.log(f"Batch {kind} skipped: no resolvable URL ({title}).")
+                continue
+            if kind == "media":
+                format_id = self.format_for_index(index)
+                fmt_label = self.format_label_map.get(format_id, format_id)
+                transcript_track = None
+                if (
+                    index not in self.card_by_index
+                    and index not in self.entry_format_by_index
+                ):
+                    default_format_count += 1
+            else:
+                format_id = None
+                fmt_label = None
+                transcript_track = self.transcript_track_for_index(index)
+            items.append(
+                BatchItem(
+                    index=index,
+                    title=title,
+                    url=url,
+                    format_id=format_id,
+                    fmt_label=fmt_label,
+                    transcript_track=transcript_track,
+                )
+            )
+        return tuple(items), skipped, default_format_count
+
+    def start_batch_media(self) -> None:
+        self._start_batch("media")
+
+    def start_batch_transcript(self) -> None:
+        self._start_batch("transcript")
+
+    def _start_batch(self, kind: str) -> None:
+        if not self.output_path:
+            self.ui_warn("Folder Error", "Select a folder first.")
+            return
+        if not self.selected_entry_indexes:
+            self.ui_warn("Batch", "Select at least one item first.")
+            return
+        if self.batch_run is not None:
+            self.log("Batch start ignored: another batch is already running.")
+            return
+        if self.is_fetching:
+            self.log("Batch start ignored: fetch is still running.")
+            return
+        items, skipped, default_count = self._freeze_batch_items(kind)
+        if not items:
+            self.log(f"Batch {kind} not started: no selected item can be processed.")
+            self.batch_bar.set_status("No selected item can be processed.")
+            return
+        run = BatchRun(
+            kind=kind,
+            items=items,
+            generation=self.entries_generation,
+            folder=self.output_path,
+            skipped=skipped,
+            default_format_count=default_count,
+        )
+        self.batch_run = run
+        self.batch_prompt_policy = BatchPromptPolicy()
+        self.batch_bar.set_running(True)
+        self.batch_bar.set_enabled(False)
+        self.batch_bar.set_status(f"Starting batch {kind}…")
+        self.log(
+            f"Batch {kind} started: {len(self.selected_entry_indexes)} item(s) "
+            f"selected of {len(self.video_entries)}."
+        )
+        threading.Thread(target=self._run_batch_worker, args=(run,), daemon=True).start()
+
+    def _begin_batch_item(self, run: BatchRun, item: BatchItem):
+        if run.generation != self.entries_generation:
+            run.cancel.set()
+            return None, "session replaced"
+        card = self.card_by_index.get(item.index)
+        if card is not None and card in self.busy_cards:
+            return None, "card busy"
+        if run.kind == "media":
+            format_id = item.format_id or self.format_options[0]["format"]
+            fmt_label = item.fmt_label or self.format_label_map.get(format_id, format_id)
+            if not self.ffmpeg_available and "+" in format_id:
+                choice = self.confirm_ffmpeg_fallback(fmt_label)
+                if choice == "cancel":
+                    return None, "ffmpeg declined"
+                if choice == "fallback":
+                    format_id = "best"
+                    fmt_label = self.format_label_map.get(format_id, "Best (single file)")
+                    self.log("ffmpeg missing: switching to Best (single file) for compatibility.")
+                else:
+                    self.log("ffmpeg missing: proceeding without merge support (may fail or be video-only).")
+            media_epoch = self.invalidate_verified_media(card)
+            if card is not None:
+                self.queue_card_busy(card, True)
+                self.queue_card_status(card, f"Downloading ({fmt_label})", state="downloading")
+                self.queue_card_progress(card, 0)
+            self.last_action_kind = "media"
+            self.last_selected_format = format_id
+            self.last_selected_label = fmt_label
+            self.last_selected_title = item.title
+            self.last_transcript_source = None
+            self.last_transcript_languages = []
+            self.set_progress(0)
+            return (item.url, format_id, run.folder, card, fmt_label, media_epoch), None
+
+        if card is not None:
+            self.queue_card_busy(card, True)
+            self.queue_card_status(card, "Downloading transcript", state="downloading")
+            self.queue_card_progress(card, 0)
+        self.last_action_kind = "transcript"
+        self.last_selected_format = None
+        self.last_selected_label = None
+        self.last_selected_title = item.title
+        self.last_transcript_source = None
+        self.last_transcript_languages = []
+        self.set_progress(0)
+        return (item.url, run.folder, card, item.transcript_track), None
+
+    def _record_batch_outcome(self, run: BatchRun, outcome: str, status: str) -> None:
+        setattr(run, outcome, getattr(run, outcome) + 1)
+        self.batch_bar.set_status(status)
+
+    def _run_batch_worker(self, run: BatchRun) -> None:
+        total = len(run.items)
+        try:
+            for position, item in enumerate(run.items, start=1):
+                if run.cancel.is_set():
+                    reason = self.run_on_ui_thread(
+                        lambda: (
+                            "session replaced"
+                            if run.generation != self.entries_generation
+                            else "cancelled"
+                        )
+                    )
+                    remaining = total - position + 1
+                    for skipped_item in run.items[position - 1:]:
+                        self.log(
+                            f"Batch {run.kind} skipped: {reason} ({skipped_item.title})."
+                        )
+                    self.run_on_ui_thread(
+                        lambda count=remaining: setattr(run, "skipped", run.skipped + count)
+                    )
+                    break
+                self.log(f"Batch {run.kind} [{position}/{total}]: {item.title}")
+                self.run_on_ui_thread(
+                    lambda p=position, title=item.title: self.batch_bar.set_status(
+                        f"Batch {p}/{total} · {title}"
+                    )
+                )
+                dispatch, skip_reason = self.run_on_ui_thread(
+                    lambda current=item: self._begin_batch_item(run, current)
+                )
+                if dispatch is None:
+                    self.log(
+                        f"Batch {run.kind} [{position}/{total}] skipped: "
+                        f"{skip_reason} ({item.title})."
+                    )
+                    self.run_on_ui_thread(
+                        lambda: self._record_batch_outcome(
+                            run, "skipped", f"Skipped · {item.title}"
+                        )
+                    )
+                    continue
+                try:
+                    if run.kind == "media":
+                        success = bool(self.download_video(*dispatch))
+                    else:
+                        success = bool(self.download_transcript(*dispatch))
+                except Exception as exc:
+                    self.log_error(f"Batch {run.kind}", exc)
+                    card = dispatch[3] if len(dispatch) > 3 else None
+                    if card is not None:
+                        self.queue_card_status(card, "Failed", state="failed")
+                        self.queue_card_busy(card, False)
+                    success = False
+                outcome = "completed" if success else "failed"
+                if not success:
+                    self.log(f"Batch {run.kind} [{position}/{total}] failed: {item.title}.")
+                self.run_on_ui_thread(
+                    lambda result=outcome: self._record_batch_outcome(
+                        run, result, f"Batch {position}/{total} · {item.title}"
+                    )
+                )
+        finally:
+            self.run_on_ui_thread(lambda: self._finish_batch(run))
+
+    def _finish_batch(self, run: BatchRun) -> None:
+        summary = (
+            f"Batch {run.kind} finished: {run.completed} complete, "
+            f"{run.failed} failed, {run.skipped} skipped."
+        )
+        if self.batch_run is run:
+            self.batch_run = None
+        self.batch_prompt_policy = None
+        self.batch_bar.set_running(False)
+        self.batch_bar.set_status(summary)
+        self.log(summary)
+        if run.kind == "media" and run.default_format_count:
+            default_label = self.format_options[0]["label"]
+            self.log(
+                f"Batch media: {run.default_format_count} item(s) used the session "
+                f"default format ({default_label}) because their card was not rendered."
+            )
+        self._refresh_batch_bar()
+
+    def cancel_batch(self) -> None:
+        run = self.batch_run
+        if run is None:
+            return
+        run.cancel.set()
+        self.batch_bar.set_status("Stopping after current item…")
+
     def handle_card_download(self, card, format_id):
         entry = self.card_entries.get(card)
         if not entry:
@@ -1267,7 +1678,11 @@ class VideoDownloaderApp:
         if not folder:
             self.ui_warn('Folder Error', 'Select a folder first.')
             return
-        url = entry.get('webpage_url', self.url_entry.get().strip())
+        url = self.entry_url_for_entry(entry)
+        if url is None:
+            self.log("Download failed: entry has no resolvable per-item URL.")
+            self.queue_card_status(card, "Failed (No item URL)", state="failed")
+            return
         ffmpeg_headers = entry.get("_ffmpeg_headers")
         if ffmpeg_headers:
             # Invalidate prior association on the main thread before any worker output.
@@ -1283,7 +1698,7 @@ class VideoDownloaderApp:
         fmt_id = format_id or self.format_options[0]["format"]
         fmt_label = self.format_label_map.get(fmt_id, fmt_id)
         if not self.ffmpeg_available and '+' in fmt_id:
-            choice = self.ui_ffmpeg_fallback(fmt_label)
+            choice = self.confirm_ffmpeg_fallback(fmt_label)
             if choice == "cancel":
                 return
             if choice == "fallback":
@@ -1319,7 +1734,11 @@ class VideoDownloaderApp:
         if not folder:
             self.ui_warn('Folder Error', 'Select a folder first.')
             return
-        url = entry.get('webpage_url', self.url_entry.get().strip())
+        url = self.entry_url_for_entry(entry)
+        if url is None:
+            self.log("Transcript failed: entry has no resolvable per-item URL.")
+            self.queue_card_status(card, "Transcript failed (No item URL)", state="failed")
+            return
         title = entry.get('title', 'Video')
         self.last_action_kind = "transcript"
         self.last_selected_format = None
@@ -1371,9 +1790,11 @@ class VideoDownloaderApp:
         entry = self.card_entries.get(card)
         if not isinstance(entry, dict):
             return
-        source_url = str(entry.get("webpage_url") or "").strip()
-        if not source_url:
-            source_url = self.url_entry.get().strip()
+        source_url = self.entry_url_for_entry(entry)
+        if source_url is None:
+            self.log("Whisper failed: entry has no resolvable per-item URL.")
+            self.queue_card_status(card, "Whisper failed (No item URL)", state="failed")
+            return
         title = str(entry.get("title") or "Video")
         verified_media = self.verified_media_by_card.get(card)
         request_id = str(uuid.uuid4())
@@ -2062,6 +2483,7 @@ class VideoDownloaderApp:
     def download_video(self, url, format_id, out_path, card=None, fmt_label=None, media_epoch=None):
         finished_logged = False
         saved_files = []
+        ok = False
 
         def hook(d):
             nonlocal finished_logged
@@ -2097,12 +2519,7 @@ class VideoDownloaderApp:
                 ok = self.download_manager.download(url, format_id, outtmpl, progress_hook=hook, post_hook=post_hook)
             except CookiesRequiredError as exc:
                 self.log_error("Download", exc.original or exc)
-                if self.ui_confirm(
-                    "Cookies required",
-                    "This video may require cookies (age/consent/bot checks).\n"
-                    "Automatic browser-cookie retry did not finish successfully.\n\n"
-                    "Select a cookies.txt file to retry?",
-                ):
+                if self.confirm_cookies_retry("video"):
                     self.ui_select_cookies()
                     if not self.cookies_path:
                         self.log("No cookies.txt selected.")
@@ -2117,11 +2534,7 @@ class VideoDownloaderApp:
                     self.log("Cookies selection declined.")
                     ok = False
             if not ok and self.last_error_reason == "format unavailable" and format_id != "best":
-                if self.ui_confirm(
-                    "Format unavailable",
-                    "The selected format is not available for this video.\n"
-                    "Retry with Best (single file)?",
-                ):
+                if self.confirm_format_fallback():
                     fallback_id = "best"
                     fallback_label = self.format_label_map.get(fallback_id, "Best (single file)")
                     self.log(f"Retrying download with {fallback_label} due to unavailable format.")
@@ -2180,6 +2593,7 @@ class VideoDownloaderApp:
         finally:
             if card:
                 self.queue_card_busy(card, False)
+        return bool(ok)
 
     def _recent_download_outputs(self, folder: str, started_at: float) -> list[str]:
         ignored_suffixes = (
@@ -2258,8 +2672,11 @@ class VideoDownloaderApp:
 
     def download_transcript(self, url, out_path, card=None, selected_transcript=None):
         outtmpl = os.path.join(out_path, '%(title)s.transcript.%(ext)s')
+        success = False
 
         def mark_success(result):
+            nonlocal success
+            success = True
             self.last_transcript_source = result.source
             self.last_transcript_languages = list(result.languages)
             self.set_progress(1)
@@ -2277,12 +2694,7 @@ class VideoDownloaderApp:
             mark_success(result)
         except CookiesRequiredError as exc:
             self.log_error("Transcript", exc.original or exc)
-            if self.ui_confirm(
-                "Cookies required",
-                "This transcript may require cookies (age/consent/bot checks).\n"
-                "Automatic browser-cookie retry did not finish successfully.\n\n"
-                "Select a cookies.txt file to retry?",
-            ):
+            if self.confirm_cookies_retry("transcript"):
                 self.ui_select_cookies()
                 if not self.cookies_path:
                     self.log("No cookies.txt selected.")
@@ -2296,7 +2708,6 @@ class VideoDownloaderApp:
                             selected_track=selected_transcript,
                         )
                         mark_success(result)
-                        return
                     except CookiesRequiredError as retry_exc:
                         self.log_error("Transcript", retry_exc.original or retry_exc)
                         if card:
@@ -2324,6 +2735,7 @@ class VideoDownloaderApp:
         finally:
             if card:
                 self.queue_card_busy(card, False)
+        return success
 
     def on_close(self):
         try:

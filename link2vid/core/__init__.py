@@ -21,6 +21,7 @@ from .fetcher import (
 )
 from .helpers import (
     download_with_ffmpeg,
+    entry_watch_url,
     get_format_options,
     get_yt_dlp_version,
     normalize_url,
@@ -56,6 +57,7 @@ __all__ = [
     "classify_error",
     "get_error_guidance",
     "download_with_ffmpeg",
+    "entry_watch_url",
     "extract_embedded_page_videos",
     "get_format_options",
     "get_yt_dlp_version",

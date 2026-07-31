@@ -118,6 +118,16 @@ class _AppHarness(unittest.TestCase):
         self.app.main_thread_id = threading.get_ident()
         self.app.ui_queue = queue.Queue()
         self.app.card_entries = {}
+        self.app.video_entries = []
+        self.app.entries_generation = 0
+        self.app.selected_entry_indexes = set()
+        self.app.entry_format_by_index = {}
+        self.app.entry_transcript_by_index = {}
+        self.app.card_index_by_card = {}
+        self.app.card_by_index = {}
+        self.app.batch_run = None
+        self.app.batch_prompt_policy = None
+        self.app.batch_bar = mock.Mock()
         self.app.verified_media_by_card = {}
         self.app._verified_media_epoch_by_card = {}
         self.app.whisper_runs_by_card = {}
@@ -166,6 +176,10 @@ class _AppHarness(unittest.TestCase):
             "_download_direct_media",
             "download_transcript",
             "handle_card_transcript",
+            "entry_url_for_entry",
+            "confirm_cookies_retry",
+            "confirm_format_fallback",
+            "confirm_ffmpeg_fallback",
             "clear_results",
             "_folder_snapshot",
             "_recent_download_outputs",
@@ -642,6 +656,9 @@ class TestPhase2C1OwnershipAndProbe(_AppHarness):
                 )
             stack.enter_context(
                 mock.patch("link2vid.ui.main_window.FooterBar", widget_factory)
+            )
+            stack.enter_context(
+                mock.patch("link2vid.ui.main_window.BatchBar", widget_factory)
             )
             stack.enter_context(
                 mock.patch("link2vid.ui.main_window.LogDrawer", widget_factory)

@@ -28,6 +28,16 @@ Automated baseline: `python -m pytest tests/`
 - No tracks available — card shows clear failed/unavailable state; logs explain why.
 - Auth/consent gating — cookie retry and `cookies.txt` prompt still work.
 
+## Batch selection and batch actions
+
+1. Fetch a playlist/channel with more than 20 entries. Confirm every entry is selected by default and the batch bar count matches the fetched count before using **Load more**.
+2. Use **Select none**, select two visible cards, then **Load more**. Newly rendered cards remain unchecked and the selected count stays at two. **Select all** restores the full count.
+3. Select at least three items, including one not yet rendered, and change one rendered card's format. **Download selected** creates one separate media result per item, uses the changed format for that card and the session default for the unrendered item, and creates no combined artifact.
+4. Run **Transcript selected** over the same items. Confirm separate provider-caption files, no media files, and no Whisper artifacts.
+5. Include one failing item. Later items still run and the final completed/failed/skipped summary is accurate.
+6. Press **Stop** during an item. The in-flight item finishes and every remaining item is skipped; the batch bar returns to idle.
+7. Trigger cookies, unavailable-format, or missing-ffmpeg fallback on several items. Each question appears at most once during that run and appears normally again for a later per-card action.
+
 ## Local Whisper
 
 - Model list probes without downloading weights; a missing/broken native dependency disables only Whisper controls.

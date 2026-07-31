@@ -20,7 +20,7 @@ from typing import Any, Callable, Iterable, Sequence
 from .helpers import sanitize_filename
 from .runtime import model_cache_dir
 
-DEFAULT_WHISPER_MODEL = "small"
+DEFAULT_WHISPER_MODEL = "large-v3"
 _MISSING_LANGUAGE = "und"
 _MAX_PAIR_SUFFIX = 10_000
 
@@ -161,7 +161,7 @@ def validate_model_name(model_name: str, models: Sequence[str] | None = None) ->
 
 
 def default_model_name(models: Sequence[str] | None = None) -> str:
-    """Return ``small`` when present; otherwise the first upstream alias."""
+    """Return ``large-v3`` when present; otherwise the first upstream alias."""
     aliases = list(models) if models is not None else available_models()
     if not aliases:
         raise InvalidWhisperModelError("Faster Whisper reported no available models")

@@ -15,6 +15,7 @@ import yt_dlp
 _URL_IN_TEXT = re.compile(r"https?://\S+", re.IGNORECASE)
 _FFMPEG_TIME_RE = re.compile(r"time=(\d+):(\d+):(\d+(?:\.\d+)?)")
 _FFMPEG_PROGRESS_MS_RE = re.compile(r"^out_time_ms=(\d+(?:\.\d+)?)$")
+_YOUTUBE_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 
 ProgressHook = Callable[[float, float | None, float | None], None]
 
@@ -39,6 +40,30 @@ def is_usable_http_url(url: str | None) -> bool:
         return False
     parsed = urlparse(u)
     return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+
+
+def entry_watch_url(entry: object) -> str | None:
+    """Resolve a yt-dlp entry to a usable per-item URL."""
+    if not isinstance(entry, dict):
+        return None
+    for key in ("webpage_url", "url", "original_url"):
+        value = entry.get(key)
+        if isinstance(value, str) and is_usable_http_url(value):
+            return value.strip()
+    video_id = entry.get("id")
+    extractor = (
+        entry.get("ie_key")
+        or entry.get("extractor_key")
+        or entry.get("extractor")
+        or ""
+    )
+    if (
+        isinstance(video_id, str)
+        and _YOUTUBE_VIDEO_ID_RE.fullmatch(video_id)
+        and str(extractor).lower().startswith("youtube")
+    ):
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return None
 
 
 def url_from_clipboard_text(text: str | None) -> str | None:

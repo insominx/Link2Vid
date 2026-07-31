@@ -39,13 +39,45 @@ class _CardHarness(unittest.TestCase):
 
 
 class TestVideoCardWhisperControls(_CardHarness):
-    def test_default_selects_small_when_present(self) -> None:
-        card = self._make_card(whisper_models=["tiny", "base", "small", "medium"])
-        self.assertEqual(card.get_selected_whisper_model(), "small")
-        self.assertEqual(card.whisper_model_menu.get(), "small")
+    def test_selection_defaults_checked_and_programmatic_updates_are_silent(self) -> None:
+        callback = mock.Mock()
+        card = self._make_card(on_selection_change=callback)
+        self.assertTrue(card.is_selected())
+        card.set_selected(False)
+        self.assertFalse(card.is_selected())
+        callback.assert_not_called()
+        card.set_selected(True, notify=True)
+        callback.assert_called_once_with(card, True)
+
+    def test_selection_checkbox_stays_enabled_while_actions_are_disabled(self) -> None:
+        card = self._make_card(on_selection_change=mock.Mock())
+        card.set_actions_enabled(False)
+        self.assertEqual(str(card.select_checkbox.cget("state")), "normal")
+
+    def test_format_and_transcript_changes_write_through_callbacks(self) -> None:
+        on_format_change = mock.Mock()
+        on_transcript_change = mock.Mock()
+        track = object()
+        card = self._make_card(
+            format_options=[("Best", "best"), ("Audio", "bestaudio")],
+            transcript_options=[("English", track)],
+            on_format_change=on_format_change,
+            on_transcript_change=on_transcript_change,
+        )
+        card._on_format_change("Audio")
+        card._on_transcript_change("English")
+        on_format_change.assert_called_once_with(card, "bestaudio")
+        on_transcript_change.assert_called_once_with(card, track)
+
+    def test_default_selects_large_v3_when_present(self) -> None:
+        card = self._make_card(
+            whisper_models=["tiny", "small", "large-v3", "distil-large-v3.5"]
+        )
+        self.assertEqual(card.get_selected_whisper_model(), "large-v3")
+        self.assertEqual(card.whisper_model_menu.get(), "large-v3")
         self.assertTrue(card.whisper_available)
 
-    def test_default_selects_first_alias_when_small_absent(self) -> None:
+    def test_default_selects_first_alias_when_large_v3_absent(self) -> None:
         card = self._make_card(whisper_models=["tiny", "base", "medium"])
         self.assertEqual(card.get_selected_whisper_model(), "tiny")
         self.assertEqual(card.whisper_model_menu.get(), "tiny")

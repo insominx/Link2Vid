@@ -53,25 +53,37 @@ if exist "developer.json" (
 
 echo [Link2Vid] Staging sidecar binaries...
 if not exist "%RELEASE_DIR%\bin" mkdir "%RELEASE_DIR%\bin"
-where ffmpeg >nul 2>&1
-if errorlevel 1 (
-  echo [WARN] ffmpeg not found on builder PATH; bin\ffmpeg.exe not staged.
-) else (
-  for /f "delims=" %%F in ('where ffmpeg') do (
-    copy /Y "%%F" "%RELEASE_DIR%\bin\ffmpeg.exe" >nul
-    goto :ffmpeg_copied
-  )
-  :ffmpeg_copied
-  where ffprobe >nul 2>&1
-  if not errorlevel 1 (
-    for /f "delims=" %%F in ('where ffprobe') do (
-      copy /Y "%%F" "%RELEASE_DIR%\bin\ffprobe.exe" >nul
-      goto :ffprobe_copied
-    )
-  )
-  :ffprobe_copied
-  echo [OK] ffmpeg/ffprobe staged to %RELEASE_DIR%\bin\
+set "FFMPEG_SOURCE="
+set "FFPROBE_SOURCE="
+if defined ChocolateyInstall if exist "%ChocolateyInstall%\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe" (
+  set "FFMPEG_SOURCE=%ChocolateyInstall%\lib\ffmpeg\tools\ffmpeg\bin\ffmpeg.exe"
+  set "FFPROBE_SOURCE=%ChocolateyInstall%\lib\ffmpeg\tools\ffmpeg\bin\ffprobe.exe"
 )
+if not defined FFMPEG_SOURCE (
+  for /f "delims=" %%F in ('where ffmpeg 2^>nul') do if not defined FFMPEG_SOURCE set "FFMPEG_SOURCE=%%F"
+  for /f "delims=" %%F in ('where ffprobe 2^>nul') do if not defined FFPROBE_SOURCE set "FFPROBE_SOURCE=%%F"
+)
+if not defined FFMPEG_SOURCE (
+  echo [WARN] ffmpeg not found on builder PATH; bin\ffmpeg.exe not staged.
+  goto :sidecars_done
+)
+
+copy /Y "%FFMPEG_SOURCE%" "%RELEASE_DIR%\bin\ffmpeg.exe" >nul
+if defined FFPROBE_SOURCE copy /Y "%FFPROBE_SOURCE%" "%RELEASE_DIR%\bin\ffprobe.exe" >nul
+"%RELEASE_DIR%\bin\ffmpeg.exe" -version >nul 2>&1
+if errorlevel 1 (
+  echo [WARN] Staged ffmpeg is not runnable; removing invalid sidecars.
+  del /f /q "%RELEASE_DIR%\bin\ffmpeg.exe" "%RELEASE_DIR%\bin\ffprobe.exe" 2>nul
+  goto :sidecars_done
+)
+"%RELEASE_DIR%\bin\ffprobe.exe" -version >nul 2>&1
+if errorlevel 1 (
+  echo [WARN] Staged ffprobe is not runnable; removing invalid sidecars.
+  del /f /q "%RELEASE_DIR%\bin\ffmpeg.exe" "%RELEASE_DIR%\bin\ffprobe.exe" 2>nul
+  goto :sidecars_done
+)
+echo [OK] Runnable ffmpeg/ffprobe staged to %RELEASE_DIR%\bin\
+:sidecars_done
 
 echo [Link2Vid] Running import smoke test...
 "%RELEASE_EXE%" --smoke

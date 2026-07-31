@@ -1,6 +1,7 @@
 import unittest
 
 from link2vid.core.helpers import (
+    entry_watch_url,
     get_format_options,
     normalize_url,
     url_from_clipboard_text,
@@ -58,6 +59,39 @@ class TestHelpers(unittest.TestCase):
         labels = {opt["label"] for opt in options}
         self.assertIn("bestvideo+bestaudio/best", formats)
         self.assertIn("Best (A+V)", labels)
+
+    def test_entry_watch_url_resolution_order(self):
+        entry = {
+            "webpage_url": "https://example.com/webpage",
+            "url": "https://example.com/flat",
+            "original_url": "https://example.com/original",
+        }
+        self.assertEqual(entry_watch_url(entry), "https://example.com/webpage")
+        entry["webpage_url"] = "not-a-url"
+        self.assertEqual(entry_watch_url(entry), "https://example.com/flat")
+        entry["url"] = "opaque-id"
+        self.assertEqual(entry_watch_url(entry), "https://example.com/original")
+
+    def test_entry_watch_url_supports_flat_and_youtube_id_entries(self):
+        self.assertEqual(
+            entry_watch_url({"url": "https://www.youtube.com/watch?v=abcdefghijk"}),
+            "https://www.youtube.com/watch?v=abcdefghijk",
+        )
+        self.assertEqual(
+            entry_watch_url({"id": "abcdefghijk", "ie_key": "Youtube"}),
+            "https://www.youtube.com/watch?v=abcdefghijk",
+        )
+        self.assertEqual(
+            entry_watch_url({"id": "abc_def-123", "extractor_key": "YouTubeTab"}),
+            "https://www.youtube.com/watch?v=abc_def-123",
+        )
+
+    def test_entry_watch_url_rejects_unusable_inputs(self):
+        for value in (None, "video", [], {}, {"url": ""}):
+            with self.subTest(value=value):
+                self.assertIsNone(entry_watch_url(value))
+        self.assertIsNone(entry_watch_url({"id": "abcdefghijk", "ie_key": "Vimeo"}))
+        self.assertIsNone(entry_watch_url({"id": "too-short", "ie_key": "Youtube"}))
 
 
 if __name__ == "__main__":
