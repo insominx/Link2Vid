@@ -48,6 +48,8 @@ User URL
   → UI renders VideoCard list (batched with Load more)
 ```
 
+Auth routing: when yt-dlp fails with a cookie/auth signal, `VideoFetcher` returns `NeedsSelenium` if the exception chain shows a login redirect (`Unsupported URL` to `/login`, `/users/login`, `/sign_in`, or `/sign-in`), if username+password were already supplied, or if the URL matches a configured `developer.json` credential domain. Unconfigured generic cookie failures still return `NeedsCookies` so browser cookies / cookies.txt remain the path for ordinary sites. Inspect the full exception chain — the final `CookiesRequiredError` message alone often loses the login redirect.
+
 Fetch runs off the UI thread via `ThreadPoolExecutor`. Results and logs reach widgets through `ui_queue` + `root.after`.
 
 ## Download flow
@@ -55,7 +57,7 @@ Fetch runs off the UI thread via `ThreadPoolExecutor`. Results and logs reach wi
 Per card, user picks a format (Best A+V / Best video / Best audio) or Transcript.
 
 - **yt-dlp path** — standard sites, playlists; `DownloadManager` with progress hooks.
-- **Direct media path** — entries with `_ffmpeg_headers` use `download_with_ffmpeg`; progress uses `ffmpeg_progress_display` for coherent elapsed/total display.
+- **Direct media path** — entries with `_ffmpeg_headers` use `download_with_ffmpeg`; progress uses `ffmpeg_progress_display` for coherent elapsed/total display. On Windows, ffmpeg/ffprobe subprocesses launch with `CREATE_NO_WINDOW` so a closable console cannot abort an in-flight download.
 - **Transcript path** — caption/subtitle files only; no media mux.
 
 Output names use `sanitize_filename` + `unique_output_path` (collision suffix, no silent overwrite).

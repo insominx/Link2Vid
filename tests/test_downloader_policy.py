@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from link2vid.core.downloader import DownloadManager, TranscriptTrack
-from link2vid.core.errors import NoTranscriptAvailableError
+from link2vid.core.errors import CookiesRequiredError, NoTranscriptAvailableError
 from tests.fixtures.hosts import VIDEO_HOST_A
 
 
@@ -38,6 +38,91 @@ class TestDownloaderPolicy(unittest.TestCase):
                 Exception("No video could be found on this page"),
             )
         )
+
+    def test_cookie_failure_hint_covers_missing_edge_profile(self):
+        manager = DownloadManager(ydl_logger=DummyLogger())
+        hint = manager._cookie_failure_hint(
+            Exception('could not find edge cookies database in "C:\\Users\\me\\AppData\\Local\\Microsoft\\Edge\\User Data"')
+        )
+        self.assertIsNotNone(hint)
+        self.assertIn("Edge profile not found", hint)
+
+    def test_cookie_access_errors_keep_original_site_error(self):
+        manager = DownloadManager(ydl_logger=DummyLogger())
+        first_err = Exception("unable to download video data: HTTP Error 403: Forbidden")
+        access_err = Exception(
+            "could not find firefox cookies database in "
+            "'C:\\\\Users\\\\mlinh\\\\AppData\\\\Roaming\\\\Mozilla\\\\Firefox\\\\Profiles'"
+        )
+        self.assertTrue(manager._is_cookie_access_error(access_err))
+        self.assertFalse(manager._is_cookie_access_error(first_err))
+        self.assertIs(
+            manager._note_browser_cookie_failure("firefox", access_err, first_err),
+            first_err,
+        )
+
+    def test_site_auth_retry_error_replaces_original(self):
+        manager = DownloadManager(ydl_logger=DummyLogger())
+        first_err = Exception("unable to download video data: HTTP Error 403: Forbidden")
+        site_err = Exception("Sign in to confirm you’re not a bot")
+        self.assertFalse(manager._is_cookie_access_error(site_err))
+        self.assertIs(
+            manager._note_browser_cookie_failure("brave", site_err, first_err),
+            site_err,
+        )
+
+    def test_download_preserves_original_error_when_cookie_access_fails(self):
+        first_err = Exception("unable to download video data: HTTP Error 403: Forbidden")
+        access_err = Exception("could not find firefox cookies database in Profiles")
+
+        class FakeYoutubeDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def download(self, _urls):
+                if self.opts.get("cookiesfrombrowser"):
+                    raise access_err
+                raise first_err
+
+        manager = DownloadManager(ydl_logger=DummyLogger())
+        manager._browser_candidates = lambda: ["firefox"]
+        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+            with self.assertRaises(CookiesRequiredError) as ctx:
+                manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out")
+        self.assertIs(ctx.exception.original, first_err)
+        self.assertEqual(manager.last_cookies_mode, "none")
+        self.assertIsNone(manager.last_cookies_browser)
+
+    def test_download_marks_browser_cookies_only_after_success(self):
+        first_err = Exception("HTTP Error 403: Forbidden")
+
+        class FakeYoutubeDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def download(self, _urls):
+                if self.opts.get("cookiesfrombrowser") == ("brave",):
+                    return None
+                raise first_err
+
+        manager = DownloadManager(ydl_logger=DummyLogger())
+        manager._browser_candidates = lambda: ["brave"]
+        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+            self.assertTrue(manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out"))
+        self.assertEqual(manager.last_cookies_mode, "browser")
+        self.assertEqual(manager.last_cookies_browser, "brave")
 
     def test_apply_js_runtime_opts_node(self):
         manager = DownloadManager(ydl_logger=DummyLogger())

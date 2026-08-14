@@ -28,7 +28,7 @@ There is no valid `Link2Vid.exe` under `build/` after `build_windows.bat` finish
 - Network access on first use of each Whisper model; weights are cached at `%LOCALAPPDATA%\Link2Vid\models`
 - Optional compatible NVIDIA driver/CUDA runtime for GPU transcription; Link2Vid selects CPU when CTranslate2 reports no CUDA device
 
-The build script copies `ffmpeg.exe` and `ffprobe.exe` from the builder's PATH into `release/Link2Vid/bin/` when available. If the builder lacks ffmpeg, the build still succeeds; place binaries manually before distributing.
+The build script stages `ffmpeg.exe` and `ffprobe.exe` into `release/Link2Vid/bin/` when available. On Windows it prefers the real Chocolatey package binaries under `%ChocolateyInstall%\lib\ffmpeg\tools\ffmpeg\bin\` when present, because Chocolatey's PATH shims are not runnable outside that toolchain. It falls back to the first `where ffmpeg` / `where ffprobe` hits, then runs `-version` on both staged copies and removes them if validation fails. If the builder lacks ffmpeg, the build still succeeds; place binaries manually before distributing.
 
 If `developer.json` exists in the repo root at build time, it is copied into `release/Link2Vid/` automatically.
 

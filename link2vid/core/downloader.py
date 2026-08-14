@@ -203,9 +203,26 @@ class DownloadManager:
             return "Hint: Windows DPAPI decrypt failed. Close the browser and retry, or use cookies.txt."
         if "could not copy chrome cookie database" in msg:
             return "Hint: Browser cookie database is locked. Fully close the browser (including background processes) and retry."
-        if "could not find firefox cookies database" in msg:
-            return "Hint: Firefox profile not found on this machine."
+        if "could not find" in msg and "cookies database" in msg:
+            if "firefox" in msg:
+                return "Hint: Firefox profile not found on this machine."
+            if "edge" in msg:
+                return "Hint: Edge profile not found on this machine."
+            if "chrome" in msg:
+                return "Hint: Chrome profile not found on this machine."
+            return "Hint: Browser cookie profile not found on this machine."
         return None
+
+    def _is_cookie_access_error(self, err: Exception) -> bool:
+        return self._cookie_failure_hint(err) is not None
+
+    def _note_browser_cookie_failure(self, browser: str, retry_err: Exception, last_err: Exception) -> Exception:
+        self.log(f"[yt-dlp] Browser cookies ({browser}) failed: {self._format_exception(retry_err)}")
+        hint = self._cookie_failure_hint(retry_err)
+        if hint:
+            self.log(f"[yt-dlp] {hint}")
+            return last_err
+        return retry_err
 
     def _should_try_browser_cookies(self, url: str, err: Exception) -> bool:
         return self._is_cookie_error(err)
@@ -372,18 +389,14 @@ class DownloadManager:
                         retry_opts = dict(ydl_opts)
                         retry_opts.pop("cookiefile", None)
                         retry_opts["cookiesfrombrowser"] = (browser,)
-                        self._mark_browser_cookies(browser)
                         with yt_dlp.YoutubeDL(retry_opts) as ydl:
                             info = ydl.extract_info(url, download=False)
-                            if "entries" in info:
-                                return info["entries"]
-                            return [info]
+                        self._mark_browser_cookies(browser)
+                        if "entries" in info:
+                            return info["entries"]
+                        return [info]
                     except Exception as retry_err:
-                        self.log(f"[yt-dlp] Browser cookies ({browser}) failed: {self._format_exception(retry_err)}")
-                        hint = self._cookie_failure_hint(retry_err)
-                        if hint:
-                            self.log(f"[yt-dlp] {hint}")
-                        last_err = retry_err
+                        last_err = self._note_browser_cookie_failure(browser, retry_err, last_err)
                         continue
                 self.log("[yt-dlp] All browser cookie attempts failed; falling back to cookies.txt prompt.")
                 raise CookiesRequiredError(original=last_err) from first_err
@@ -424,16 +437,12 @@ class DownloadManager:
                         retry_opts = dict(opts)
                         retry_opts.pop("cookiefile", None)
                         retry_opts["cookiesfrombrowser"] = (browser,)
-                        self._mark_browser_cookies(browser)
                         with yt_dlp.YoutubeDL(retry_opts) as ydl:
                             ydl.download([url])
+                        self._mark_browser_cookies(browser)
                         return True
                     except Exception as retry_err:
-                        self.log(f"[yt-dlp] Browser cookies ({browser}) failed: {self._format_exception(retry_err)}")
-                        hint = self._cookie_failure_hint(retry_err)
-                        if hint:
-                            self.log(f"[yt-dlp] {hint}")
-                        last_err = retry_err
+                        last_err = self._note_browser_cookie_failure(browser, retry_err, last_err)
                         continue
                 self.log("[yt-dlp] All browser cookie attempts failed; falling back to cookies.txt prompt.")
                 raise CookiesRequiredError(original=last_err) from first_err
@@ -500,14 +509,11 @@ class DownloadManager:
                         retry_opts = dict(opts)
                         retry_opts.pop("cookiefile", None)
                         retry_opts["cookiesfrombrowser"] = (browser,)
+                        result = attempt(retry_opts)
                         self._mark_browser_cookies(browser)
-                        return attempt(retry_opts)
+                        return result
                     except Exception as retry_err:
-                        self.log(f"[yt-dlp] Browser cookies ({browser}) failed: {self._format_exception(retry_err)}")
-                        hint = self._cookie_failure_hint(retry_err)
-                        if hint:
-                            self.log(f"[yt-dlp] {hint}")
-                        last_err = retry_err
+                        last_err = self._note_browser_cookie_failure(browser, retry_err, last_err)
                         continue
                 self.log("[yt-dlp] All browser cookie attempts failed; falling back to cookies.txt prompt.")
                 raise CookiesRequiredError(original=last_err) from first_err

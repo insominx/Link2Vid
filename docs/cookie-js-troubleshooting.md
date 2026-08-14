@@ -26,6 +26,19 @@ For app architecture and fetch routing, see [architecture.md](./architecture.md)
    - For bot/age/consent errors, Link2Vid tries browser cookies first (Edge/Chrome/Brave/Firefox).
    - Set preferred browser in `developer.json` → `cookies_browser`.
    - If that fails, export cookies and select `cookies.txt` in the app.
+   - Fetch can succeed on a public YouTube URL while the later media download still gets HTTP 403. That is still a cookies/auth path.
+
+## Windows browser cookies
+
+yt-dlp has to *copy and decrypt* the browser cookie database. A listed browser is not enough.
+
+| Symptom | Meaning | What to do |
+|---|---|---|
+| Could not copy Chrome cookie database | Brave/Chrome/Edge is still running and the DB is locked | Fully quit the browser, including background/tray processes, then retry |
+| Failed to decrypt with DPAPI | Windows could not decrypt Chrome-family cookies (browser open, or App-Bound Encryption) | Close the browser and retry, or export `cookies.txt` |
+| Could not find firefox/edge cookies database | That browser is not installed, or has no profile | Ignore it; use a browser you actually use, or `cookies.txt` |
+
+On a machine that only has Brave (or only Chrome), Edge/Firefox attempts will always fail. Close the browser you are logged into, retry, and accept the `cookies.txt` prompt if automatic extraction still fails.
 
 ## Common errors
 
@@ -41,6 +54,8 @@ For app architecture and fetch routing, see [architecture.md](./architecture.md)
 ## Fallback paths
 
 If yt-dlp fails, Link2Vid may try an embedded-page scrape, direct HTTP media scan, HLS detection, or Selenium with your confirmation. These paths are fallback routes for pages where a direct media URL can be discovered.
+
+Login-gated community pages that redirect yt-dlp to a site login URL (or that match credentials in local `developer.json`) are routed to the Selenium confirmation path instead of stopping at a cookies.txt-only prompt. Ordinary cookie challenges on unconfigured public sites still use browser cookies / cookies.txt.
 
 ## Reporting issues
 
