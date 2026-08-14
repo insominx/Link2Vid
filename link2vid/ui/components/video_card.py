@@ -29,7 +29,7 @@ def _default_format_options() -> list[FormatOption]:
     return [
         ("Best (A+V)", "bestvideo+bestaudio/best"),
         ("Best video", "bestvideo"),
-        ("Best audio", "bestaudio"),
+        ("Audio (MP3)", "bestaudio"),
     ]
 
 

@@ -417,7 +417,7 @@ class AudioSourceResolver:
     Valid ``verified_media`` is reused with zero downloader calls. Otherwise the
     resolver owns a unique temporary workspace and downloads ``bestaudio`` through
     the injected ``DownloadManager``. ``CookiesRequiredError`` is preserved for
-    UI-mediated cookies.txt retry after the failed attempt's workspace is gone.
+    UI-mediated browser-cookie retry after the failed attempt's workspace is gone.
     """
 
     def __init__(self, download_manager: Any | None = None) -> None:

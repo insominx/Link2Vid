@@ -7,20 +7,20 @@ Automated baseline: `python -m pytest tests/`
 ## Standard media pages
 
 1. **Public, non-age video** — formats load, download completes, audio present.
-2. **Age-restricted video** — provide `cookies.txt`; formats load, download completes.
+2. **Age-restricted video** — choose the logged-in browser in the footer (and close it if needed); formats load, download completes.
 3. **Music video (common throttling)** — download completes; no persistent 403/429.
 4. **Playlist URL** — multiple cards appear; at least one item downloads.
 
 ## Browser-cookie retry
 
 1. **Auth-required video** — app retries browser cookies automatically.
-2. **Browser cookie failure (DPAPI / locked profile)** — app prompts for `cookies.txt`; download completes after selection.
+2. **Browser cookie failure (DPAPI / locked profile)** — if no browser is saved, the app asks which browser to use and remembers it. If a browser is already chosen, it tells you to close that browser instead of asking for `cookies.txt`.
 
 ## Format selection
 
 - **Best (A+V)** — playable file with audio.
 - **Best video** — video-only file.
-- **Best audio** — audio-only file.
+- **Audio (MP3)** — playable MP3; no video stream. On YouTube, this should succeed when **Best (A+V)** does, even if a dedicated audio URL 403s. Direct HLS with this format also writes MP3.
 
 ## Transcript
 
@@ -44,7 +44,7 @@ Automated baseline: `python -m pytest tests/`
 - First use downloads the selected model to `%LOCALAPPDATA%\Link2Vid\models`; a later offline run succeeds from that cache.
 - A successful media download followed by Whisper reuses that exact unchanged file.
 - Whisper without a prior download acquires temporary `bestaudio`; the action-owned temporary workspace is removed after success and failure.
-- Auth-required temporary audio gets one `cookies.txt` prompt/retry.
+- Auth-required temporary audio gets one browser-cookie prompt/retry when no preferred browser is saved.
 - Successful transcription writes non-empty, matching `<title>.whisper.<language>.txt` and `.srt` files; repeated runs use collision suffixes.
 - With compatible NVIDIA CUDA, diagnostics report `effective_device: cuda`. With no CUDA device reported by CTranslate2, the run selects CPU and records fallback. CUDA model-loading failures are surfaced rather than retried.
 - The card remains responsive, blocks overlapping actions, and ignores stale completion/progress events from an older request.

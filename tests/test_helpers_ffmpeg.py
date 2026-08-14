@@ -78,6 +78,29 @@ class TestDownloadWithFfmpeg(unittest.TestCase):
         self.assertTrue(any(value >= 0.49 for value in seen))
         self.assertEqual(seen[-1], 1.0)
 
+    @patch("link2vid.core.helpers.os.path.isfile", return_value=True)
+    @patch("link2vid.core.helpers.os.path.getsize", return_value=1024)
+    @patch("link2vid.core.helpers.probe_media_duration", return_value=100.0)
+    @patch("link2vid.core.helpers.subprocess.Popen")
+    def test_download_with_ffmpeg_audio_only_encodes_mp3(self, popen_mock, _duration, _size, _exists):
+        proc = MagicMock()
+        proc.stdout = iter(["out_time_ms=50000\n", "progress=end\n"])
+        proc.wait.return_value = None
+        proc.returncode = 0
+        popen_mock.return_value = proc
+
+        download_with_ffmpeg(
+            "https://cdn.example.com/playlist.m3u8",
+            "out.mp3",
+            audio_only=True,
+        )
+
+        cmd = popen_mock.call_args.args[0]
+        self.assertIn("-vn", cmd)
+        self.assertIn("libmp3lame", cmd)
+        self.assertNotIn("copy", cmd)
+        self.assertNotIn("aac_adtstoasc", cmd)
+
     @patch("link2vid.core.helpers.os.path.isfile", return_value=False)
     @patch("link2vid.core.helpers.probe_media_duration", return_value=None)
     @patch("link2vid.core.helpers.subprocess.Popen")

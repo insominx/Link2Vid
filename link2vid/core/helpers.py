@@ -108,11 +108,37 @@ def unique_output_path(folder: str, base_name: str, ext: str = "mp4") -> str:
     return os.path.join(folder, f"{safe} ({os.getpid()}).{ext}")
 
 
+AUDIO_EXTRACT_FORMAT = "bestaudio"
+AUDIO_EXTRACT_CODEC = "mp3"
+AUDIO_EXTRACT_BITRATE = "192"
+# YouTube audio-only DASH URLs often 403 even when the same video's muxed file works.
+# Prefer a single file that already has audio, then fall back to bestaudio.
+AUDIO_EXTRACT_FORMAT_SELECTOR = "best[acodec!=none]/best/bestaudio"
+
+
 def get_format_options() -> list[dict[str, str]]:
     return [
         {"label": "Best (A+V)", "format": "bestvideo+bestaudio/best"},
         {"label": "Best video", "format": "bestvideo"},
-        {"label": "Best audio", "format": "bestaudio"},
+        {"label": "Audio (MP3)", "format": AUDIO_EXTRACT_FORMAT},
+    ]
+
+
+def is_audio_extract_format(format_id: str | None) -> bool:
+    return (format_id or "") == AUDIO_EXTRACT_FORMAT
+
+
+def audio_extract_format_selector() -> str:
+    return AUDIO_EXTRACT_FORMAT_SELECTOR
+
+
+def audio_extract_postprocessors() -> list[dict[str, str]]:
+    return [
+        {
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": AUDIO_EXTRACT_CODEC,
+            "preferredquality": AUDIO_EXTRACT_BITRATE,
+        }
     ]
 
 
@@ -234,11 +260,17 @@ def download_with_ffmpeg(
     *,
     progress_hook: ProgressHook | None = None,
     duration_seconds: float | None = None,
+    audio_only: bool = False,
 ) -> None:
     ua, header_block = _ffmpeg_header_args(headers)
     if duration_seconds is None:
         duration_seconds = probe_media_duration(m3u8_url, headers)
 
+    encode_args = (
+        ["-vn", "-c:a", "libmp3lame", "-q:a", "2"]
+        if audio_only
+        else ["-c", "copy", "-bsf:a", "aac_adtstoasc"]
+    )
     cmd = [
         "ffmpeg",
         "-y",
@@ -252,10 +284,7 @@ def download_with_ffmpeg(
         ua,
         "-i",
         m3u8_url,
-        "-c",
-        "copy",
-        "-bsf:a",
-        "aac_adtstoasc",
+        *encode_args,
         output_file,
     ]
     cmd = [c for c in cmd if c]

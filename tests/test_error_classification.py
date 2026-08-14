@@ -7,6 +7,8 @@ class TestErrorClassification(unittest.TestCase):
     def test_classification_table(self):
         cases = [
             ("HTTP Error 403: Forbidden", "cookies/auth"),
+            ("Failed to decrypt with DPAPI", "cookies/auth"),
+            ("Could not copy Chrome cookie database", "cookies/auth"),
             ("No supported JavaScript runtime could be found", "js runtime"),
             ("n challenge solving failed", "js runtime"),
             ("ERROR: Requested format is not available", "format unavailable"),
@@ -41,7 +43,7 @@ class TestErrorClassification(unittest.TestCase):
         key, title, message = guidance
         self.assertEqual(key, "network/rate-limit")
         self.assertIn("Rate limited", title)
-        self.assertIn("cookies.txt", message)
+        self.assertIn("footer", message)
 
     def test_error_guidance_for_impersonation(self):
         guidance = get_error_guidance(

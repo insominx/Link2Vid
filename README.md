@@ -5,7 +5,7 @@ Link2Vid is a desktop application for downloading videos from various platforms 
 ## Features
 - Download videos from a wide range of sites supported by yt-dlp
 - Modern, dark-themed GUI
-- Select and preview available video formats
+- Select and preview available video formats, including **Audio (MP3)** to save only the soundtrack
 - Choose download directory
 - Download transcript/caption files without downloading video/audio media
 - Select playlist/channel entries and batch-download media or provider captions
@@ -36,9 +36,9 @@ pip install -r requirements.txt
 3. Paste a video or playlist URL into the input field.
 4. Click **Fetch** to load result cards and available formats.
 5. Use each card's checkbox, **Select all**, or **Select none** to choose entries. Selection covers the full fetched list, including entries not yet revealed by **Load more**.
-6. Choose a download folder in the footer.
+6. Choose a download folder in the footer. If a site asks for login/cookies, pick that browser under **Cookies** and close it before retrying.
 7. Click **Download selected** to save each selected media item or **Transcript selected** to save provider captions for each selected item. Batch actions run sequentially; **Stop** finishes the current item and skips the rest.
-8. For one card, click **Download** or **Transcript**, or choose a model and click **Whisper** to transcribe speech locally.
+8. For one card, choose **Audio (MP3)** to save only the soundtrack, click **Download** or **Transcript**, or choose a model and click **Whisper** to transcribe speech locally.
 
 Batch actions produce the same individual files as the corresponding per-card actions; they never create a combined archive or media file. Batch transcripts use provider captions and do not run Whisper.
 

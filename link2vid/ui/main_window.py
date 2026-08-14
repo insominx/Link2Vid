@@ -18,6 +18,12 @@ from pathlib import Path
 from urllib.parse import urlparse
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+from ..core.cookie_prefs import (
+    cookies_browser_label,
+    load_preferred_cookies_browser,
+    normalize_cookies_browser,
+    store_preferred_cookies_browser,
+)
 from ..core.dev_defaults import dev_credentials_for_url, dev_domain_for_url, resolve_login_plan
 from ..core import (
     AudioAcquisitionError,
@@ -46,6 +52,7 @@ from ..core import (
     entry_watch_url,
     get_format_options,
     get_yt_dlp_version,
+    is_audio_extract_format,
     normalize_url,
     sanitize_filename,
     sanitize_whisper_error_reason,
@@ -55,7 +62,14 @@ from ..core import (
 )
 from ..core.extractors import build_media_entries, title_from_page_url
 from ..core.runtime import model_cache_dir
-from .components import BatchBar, FooterBar, LogDrawer, VideoCard, prompt_credentials
+from .components import (
+    BatchBar,
+    FooterBar,
+    LogDrawer,
+    VideoCard,
+    prompt_cookie_browser,
+    prompt_credentials,
+)
 from .thumbnail_loader import ThumbnailLoader
 
 # Card status labels for Whisper phases (unknown-duration work stays indeterminate).
@@ -86,7 +100,8 @@ ctk.set_default_color_theme("blue")
 @dataclass
 class BatchPromptPolicy:
     lock: threading.Lock = field(default_factory=threading.Lock)
-    cookies_answer: bool | None = None
+    cookies_browser_asked: bool = False
+    cookies_browser: str | None = None
     format_fallback_answer: bool | None = None
     ffmpeg_answer: str | None = None
 
@@ -184,6 +199,8 @@ class VideoDownloaderApp:
         self.format_label_map = {opt["format"]: opt["label"] for opt in self.format_options}
         self.format_label_map.setdefault("best", "Best (single file)")
         self.dev_defaults = self.load_dev_defaults()
+        self.cookies_browser = load_preferred_cookies_browser(dev_defaults=self.dev_defaults)
+        self.user_settings_path = None
         self.main_thread_id = threading.get_ident()
         self.ui_queue = queue.Queue()
         self.log_history = []
@@ -235,6 +252,7 @@ class VideoDownloaderApp:
             log_error=self.log_error,
             dev_defaults=self.dev_defaults,
             get_cookies_path=lambda: self.cookies_path,
+            get_cookies_browser=lambda: self.cookies_browser,
         )
         # Per-app ownership: no module singleton. Construction stays lazy (no native import).
         self.whisper_service = whisper_service if whisper_service is not None else WhisperService()
@@ -320,9 +338,9 @@ class VideoDownloaderApp:
         self.footer = FooterBar(
             main_frame,
             output_path=self.output_path,
-            cookies_path=self.cookies_path or "",
+            cookies_browser=self.cookies_browser,
             on_change_output=self.browse_folder,
-            on_change_cookies=self.browse_cookies,
+            on_change_cookies_browser=self.set_cookies_browser,
             on_copy_diagnostics=self.copy_diagnostics,
         )
         self.footer.pack(fill="x", pady=(0, 8))
@@ -352,7 +370,10 @@ class VideoDownloaderApp:
         self.check_ffmpeg()
         self.check_js_runtime()
         self._probe_whisper_models()
-        self.log("Tip: Link2Vid tries browser cookies automatically for auth-like failures before asking for cookies.txt.")
+        self.log(
+            "Tip: Link2Vid reads cookies from the browser chosen in the footer. "
+            f"Current source: {cookies_browser_label(self.cookies_browser)}."
+        )
 
     def _populate_url_from_clipboard_if_valid(self) -> None:
         try:
@@ -435,26 +456,75 @@ class VideoDownloaderApp:
             return "fallback"
         return "continue"
 
-    def confirm_cookies_retry(self, context: str) -> bool:
-        noun = "transcript" if context == "transcript" else "video"
-        message = (
-            f"This {noun} may require cookies (age/consent/bot checks).\n"
-            "Automatic browser-cookie retry did not finish successfully.\n\n"
-            "Select a cookies.txt file to retry?"
+    def ui_choose_cookies_browser(self) -> str | None:
+        suggested = self.cookies_browser
+        if suggested is None:
+            running = []
+            try:
+                detected = self.download_manager._running_browsers()
+            except Exception:
+                detected = []
+            if isinstance(detected, (list, tuple)) and detected:
+                running = [item for item in detected if isinstance(item, str)]
+            suggested = running[0] if running else None
+        return self.run_on_ui_thread(
+            lambda: prompt_cookie_browser(self.root, suggested=suggested)
         )
+
+    def choose_cookies_browser(self) -> str | None:
         policy = self.batch_prompt_policy
         if policy is None:
-            return self.ui_confirm("Cookies required", message)
+            return self.ui_choose_cookies_browser()
         with policy.lock:
-            if policy.cookies_answer is None:
-                policy.cookies_answer = self.ui_confirm("Cookies required", message)
-            return policy.cookies_answer
+            if not policy.cookies_browser_asked:
+                policy.cookies_browser_asked = True
+                policy.cookies_browser = self.ui_choose_cookies_browser()
+            return policy.cookies_browser
 
-    def confirm_format_fallback(self) -> bool:
-        message = (
-            "The selected format is not available for this video.\n"
-            "Retry with Best (single file)?"
-        )
+    def set_cookies_browser(self, browser: str | None, *, persist: bool = True) -> None:
+        self.cookies_browser = normalize_cookies_browser(browser)
+        if persist:
+            try:
+                store_preferred_cookies_browser(
+                    self.cookies_browser,
+                    path=getattr(self, "user_settings_path", None),
+                )
+            except Exception as exc:
+                self.log(f"Could not save cookie browser preference: {exc}")
+        footer = getattr(self, "footer", None)
+        if footer is not None:
+            setter = getattr(footer, "set_cookies_browser", None)
+            if callable(setter):
+                setter(self.cookies_browser)
+        self.log(f"Cookie source set to {cookies_browser_label(self.cookies_browser)}.")
+
+    def _prepare_cookie_retry(self) -> bool:
+        """Ask for a browser only when none is saved. Return True to retry."""
+        if self.cookies_browser:
+            self.log(
+                f"Could not read cookies from {cookies_browser_label(self.cookies_browser)}. "
+                "Close that browser (including background processes) and retry, "
+                "or change Cookies in the footer."
+            )
+            return False
+        chosen = self.choose_cookies_browser()
+        if not chosen:
+            self.log("Browser cookie source not selected.")
+            return False
+        self.set_cookies_browser(chosen)
+        return True
+
+    def confirm_format_fallback(self, *, extract_audio: bool = False) -> bool:
+        if extract_audio:
+            message = (
+                "The selected audio format is not available for this video.\n"
+                "Retry by extracting MP3 from the best available file?"
+            )
+        else:
+            message = (
+                "The selected format is not available for this video.\n"
+                "Retry with Best (single file)?"
+            )
         policy = self.batch_prompt_policy
         if policy is None:
             return self.ui_confirm("Format unavailable", message)
@@ -486,7 +556,10 @@ class VideoDownloaderApp:
         )
 
     def ui_select_cookies(self) -> None:
-        self.run_on_ui_thread(self.browse_cookies)
+        """Compatibility seam: choose a browser instead of a cookies.txt file."""
+        chosen = self.choose_cookies_browser()
+        if chosen:
+            self.set_cookies_browser(chosen)
 
     def ui_prompt_for_credentials(self, url: str):
         return self.run_on_ui_thread(lambda: self.prompt_for_credentials(url))
@@ -1038,25 +1111,12 @@ class VideoDownloaderApp:
                 if isinstance(outcome.error, CookiesRequiredError) and outcome.error.original:
                     error_to_log = outcome.error.original
                 self.log_error("yt-dlp", error_to_log)
-                if self.ui_confirm(
-                    "Cookies required",
-                    "This video may require cookies (age/consent/bot checks).\n"
-                    "Automatic browser-cookie retry did not finish successfully.\n\n"
-                    "Select a cookies.txt file to retry?",
-                ):
-                    self.ui_select_cookies()
-                    if self.cookies_path:
-                        outcome = self.fetcher.fetch(url, username, password)
-                    else:
-                        self.log("No cookies.txt selected.")
-                        self.ui_queue.put(("results", []))
-                        return
-                else:
-                    self.log("Cookies selection declined.")
+                if not self._prepare_cookie_retry():
                     self.ui_queue.put(("results", []))
                     return
+                outcome = self.fetcher.fetch(url, username, password)
                 if isinstance(outcome, NeedsCookies):
-                    self.log("Cookies retry did not resolve the fetch error.")
+                    self.log("Browser cookie retry did not resolve the fetch error.")
                     self.ui_queue.put(("results", []))
                     return
 
@@ -1433,7 +1493,7 @@ class VideoDownloaderApp:
                                           filetypes=[('Text files', '*.txt'), ('All files', '*.*')])
         if path:
             self.cookies_path = path
-            self.footer.set_cookies_path(path)
+            self.log(f"Using cookies.txt: {path}")
 
     def update_card_buttons(self, has_folder: bool):
         for card in self.cards:
@@ -1683,6 +1743,8 @@ class VideoDownloaderApp:
             self.log("Download failed: entry has no resolvable per-item URL.")
             self.queue_card_status(card, "Failed (No item URL)", state="failed")
             return
+        fmt_id = format_id or self.format_options[0]["format"]
+        fmt_label = self.format_label_map.get(fmt_id, fmt_id)
         ffmpeg_headers = entry.get("_ffmpeg_headers")
         if ffmpeg_headers:
             # Invalidate prior association on the main thread before any worker output.
@@ -1693,10 +1755,9 @@ class VideoDownloaderApp:
                 ffmpeg_headers,
                 entry.get('title', 'Video'),
                 media_epoch=media_epoch,
+                audio_only=is_audio_extract_format(fmt_id),
             )
             return
-        fmt_id = format_id or self.format_options[0]["format"]
-        fmt_label = self.format_label_map.get(fmt_id, fmt_id)
         if not self.ffmpeg_available and '+' in fmt_id:
             choice = self.confirm_ffmpeg_fallback(fmt_label)
             if choice == "cancel":
@@ -1965,7 +2026,7 @@ class VideoDownloaderApp:
         if isinstance(exc, CookiesRequiredError):
             value = exc.original or exc
             fallback = (
-                "Cookies required; select cookies.txt to retry Whisper audio download"
+                "Cookies required; choose a browser in the footer and retry Whisper"
             )
         elif isinstance(exc, AudioAcquisitionError):
             value = exc
@@ -2065,7 +2126,7 @@ class VideoDownloaderApp:
         Never touches widgets, ``whisper_runs_by_card``, request maps, or
         ``busy_cards`` directly. Reused media stays zero-download. Missing or
         stale media uses Phase 3A ``AudioSourceResolver`` with request-aware
-        acquisition progress and one UI-mediated cookies.txt retry.
+        acquisition progress and one UI-mediated browser-cookie prompt.
         """
         request_id: str | None = None
         model_name = ""
@@ -2203,23 +2264,19 @@ class VideoDownloaderApp:
                 )
 
             def prompt_cookies_for_whisper_retry(cookie_exc: CookiesRequiredError) -> None:
-                """Main-thread cookies.txt prompt; worker never touches Tk."""
+                """Main-thread browser-cookie prompt; worker never touches Tk."""
                 try:
                     self.log_error("Whisper", cookie_exc.original or cookie_exc)
                 except Exception as log_exc:
                     self._log_whisper_worker_event_failure("cookie log", log_exc)
-                confirmed = False
-                try:
-                    confirmed = bool(
-                        self.ui_confirm(
-                            "Cookies required",
-                            "This Whisper audio download may require cookies "
-                            "(age/consent/bot checks).\n"
-                            "Automatic browser-cookie retry did not finish "
-                            "successfully.\n\n"
-                            "Select a cookies.txt file to retry?",
-                        )
+                if self.cookies_browser:
+                    self._log_whisper_safely(
+                        f"Retrying Whisper audio with saved cookie browser "
+                        f"({self.cookies_browser})."
                     )
+                    return
+                try:
+                    chosen = self.choose_cookies_browser()
                 except Exception as prompt_exc:
                     self._log_whisper_worker_event_failure(
                         "cookie prompt",
@@ -2228,13 +2285,13 @@ class VideoDownloaderApp:
                     raise AudioAcquisitionError(
                         "Cookies prompt failed; Whisper audio download was not retried"
                     ) from prompt_exc
-                if not confirmed:
-                    self._log_whisper_safely("Cookies selection declined.")
+                if not chosen:
+                    self._log_whisper_safely("Browser cookie source declined.")
                     raise AudioAcquisitionError(
-                        "Cookies selection declined; Whisper audio download was not retried"
+                        "Browser cookie source declined; Whisper audio download was not retried"
                     )
                 try:
-                    self.ui_select_cookies()
+                    self.set_cookies_browser(chosen)
                 except Exception as select_exc:
                     self._log_whisper_worker_event_failure(
                         "cookie select",
@@ -2243,11 +2300,6 @@ class VideoDownloaderApp:
                     raise AudioAcquisitionError(
                         "Cookies selection failed; Whisper audio download was not retried"
                     ) from select_exc
-                if not self.cookies_path:
-                    self._log_whisper_safely("No cookies.txt selected.")
-                    raise AudioAcquisitionError(
-                        "No cookies.txt selected; Whisper audio download was not retried"
-                    )
 
             on_phase(WhisperPhase.PREPARING_AUDIO)
             try:
@@ -2275,7 +2327,7 @@ class VideoDownloaderApp:
                                 log_exc,
                             )
                         raise AudioAcquisitionError(
-                            "Cookies still required after cookies.txt retry; "
+                            "Cookies still required after browser retry; "
                             "Whisper audio download failed"
                         ) from retry_exc
 
@@ -2412,6 +2464,7 @@ class VideoDownloaderApp:
         title: str,
         *,
         media_epoch: int | None = None,
+        audio_only: bool = False,
     ) -> None:
         folder = self.output_path
         if not folder:
@@ -2420,18 +2473,19 @@ class VideoDownloaderApp:
         if media_epoch is None:
             media_epoch = self.invalidate_verified_media(card)
         safe_title = sanitize_filename(title)
-        outfile = unique_output_path(folder, safe_title, "mp4")
+        outfile = unique_output_path(folder, safe_title, "mp3" if audio_only else "mp4")
+        path_label = "Direct audio" if audio_only else "Direct HLS"
         self.last_action_kind = "media"
-        self.last_selected_format = "ffmpeg"
-        self.last_selected_label = "Direct HLS"
+        self.last_selected_format = "ffmpeg-audio" if audio_only else "ffmpeg"
+        self.last_selected_label = "Direct audio (MP3)" if audio_only else "Direct HLS"
         self.last_selected_title = title
         self.last_transcript_source = None
         self.last_transcript_languages = []
         self.set_progress(0)
         self.queue_card_busy(card, True)
-        self.queue_card_status(card, "Downloading (Direct HLS)", state="downloading")
+        self.queue_card_status(card, f"Downloading ({path_label})", state="downloading")
         self.queue_card_progress(card, 0)
-        self.log(f"Starting ffmpeg download: {title}")
+        self.log(f"Starting ffmpeg {'audio ' if audio_only else ''}download: {title}")
 
         def run_ffmpeg():
             last_logged_pct = [-10]
@@ -2451,6 +2505,7 @@ class VideoDownloaderApp:
                     outfile,
                     headers or {},
                     progress_hook=on_progress,
+                    audio_only=audio_only,
                 )
                 verified_files = self._verify_download_outputs([outfile])
                 if len(verified_files) == 1:
@@ -2465,7 +2520,7 @@ class VideoDownloaderApp:
                     self.queue_verified_media(card, verified, media_epoch)
                 else:
                     self.set_progress(0)
-                    self.queue_card_status(card, "Failed (Direct HLS)", state="failed")
+                    self.queue_card_status(card, f"Failed ({path_label})", state="failed")
                     self.log(
                         "Download verification failed: ffmpeg reported success, "
                         "but Link2Vid could not confirm the final file exists."
@@ -2473,7 +2528,7 @@ class VideoDownloaderApp:
                     self.log(f"Unverified output path: {outfile}")
             except Exception as exc:
                 self.set_progress(0)
-                self.queue_card_status(card, "Failed (Direct HLS)", state="failed")
+                self.queue_card_status(card, f"Failed ({path_label})", state="failed")
                 self.log_error("ffmpeg", exc)
             finally:
                 self.queue_card_busy(card, False)
@@ -2508,6 +2563,11 @@ class VideoDownloaderApp:
 
         outtmpl = os.path.join(out_path, '%(title)s.%(ext)s')
         started_at = time.time()
+        wants_audio = is_audio_extract_format(format_id)
+        ffmpeg_ok = bool(getattr(self, "ffmpeg_available", True))
+        extract_audio = wants_audio and ffmpeg_ok
+        if wants_audio and not ffmpeg_ok:
+            self.log("ffmpeg missing: saving audio in its original format instead of MP3.")
         try:
             self.log(
                 "Download runtime: "
@@ -2516,36 +2576,55 @@ class VideoDownloaderApp:
             )
             self.log(f"Output folder before download: {self._folder_snapshot(out_path)}")
             try:
-                ok = self.download_manager.download(url, format_id, outtmpl, progress_hook=hook, post_hook=post_hook)
+                ok = self.download_manager.download(
+                    url,
+                    format_id,
+                    outtmpl,
+                    progress_hook=hook,
+                    post_hook=post_hook,
+                    extract_audio=extract_audio,
+                )
             except CookiesRequiredError as exc:
                 self.log_error("Download", exc.original or exc)
-                if self.confirm_cookies_retry("video"):
-                    self.ui_select_cookies()
-                    if not self.cookies_path:
-                        self.log("No cookies.txt selected.")
+                if self._prepare_cookie_retry():
+                    try:
+                        ok = self.download_manager.download(
+                            url,
+                            format_id,
+                            outtmpl,
+                            progress_hook=hook,
+                            post_hook=post_hook,
+                            extract_audio=extract_audio,
+                        )
+                    except CookiesRequiredError as retry_exc:
+                        self.log_error("Download", retry_exc.original or retry_exc)
                         ok = False
-                    else:
-                        try:
-                            ok = self.download_manager.download(url, format_id, outtmpl, progress_hook=hook, post_hook=post_hook)
-                        except CookiesRequiredError as retry_exc:
-                            self.log_error("Download", retry_exc.original or retry_exc)
-                            ok = False
                 else:
-                    self.log("Cookies selection declined.")
                     ok = False
             if not ok and self.last_error_reason == "format unavailable" and format_id != "best":
-                if self.confirm_format_fallback():
+                if self.confirm_format_fallback(extract_audio=extract_audio):
                     fallback_id = "best"
-                    fallback_label = self.format_label_map.get(fallback_id, "Best (single file)")
-                    self.log(f"Retrying download with {fallback_label} due to unavailable format.")
-                    self.last_selected_format = fallback_id
+                    if extract_audio:
+                        fallback_label = self.format_label_map.get(format_id, "Audio (MP3)")
+                        self.log("Retrying by extracting MP3 from the best available file.")
+                    else:
+                        fallback_label = self.format_label_map.get(fallback_id, "Best (single file)")
+                        self.log(f"Retrying download with {fallback_label} due to unavailable format.")
+                    self.last_selected_format = format_id if extract_audio else fallback_id
                     self.last_selected_label = fallback_label
                     if card:
                         self.set_progress(0)
                         self.queue_card_progress(card, 0)
                         self.queue_card_status(card, f"Retrying ({fallback_label})", state="downloading")
                     try:
-                        ok = self.download_manager.download(url, fallback_id, outtmpl, progress_hook=hook, post_hook=post_hook)
+                        ok = self.download_manager.download(
+                            url,
+                            fallback_id,
+                            outtmpl,
+                            progress_hook=hook,
+                            post_hook=post_hook,
+                            extract_audio=extract_audio,
+                        )
                     except CookiesRequiredError as retry_exc:
                         self.log_error("Download", retry_exc.original or retry_exc)
                         ok = False
@@ -2694,36 +2773,28 @@ class VideoDownloaderApp:
             mark_success(result)
         except CookiesRequiredError as exc:
             self.log_error("Transcript", exc.original or exc)
-            if self.confirm_cookies_retry("transcript"):
-                self.ui_select_cookies()
-                if not self.cookies_path:
-                    self.log("No cookies.txt selected.")
+            if self._prepare_cookie_retry():
+                try:
+                    result = self.download_manager.download_transcript(
+                        url,
+                        outtmpl,
+                        selected_track=selected_transcript,
+                    )
+                    mark_success(result)
+                except CookiesRequiredError as retry_exc:
+                    self.log_error("Transcript", retry_exc.original or retry_exc)
                     if card:
                         self.queue_card_status(card, "Transcript failed", state="failed")
-                else:
-                    try:
-                        result = self.download_manager.download_transcript(
-                            url,
-                            outtmpl,
-                            selected_track=selected_transcript,
-                        )
-                        mark_success(result)
-                    except CookiesRequiredError as retry_exc:
-                        self.log_error("Transcript", retry_exc.original or retry_exc)
-                        if card:
-                            self.queue_card_status(card, "Transcript failed", state="failed")
-                    except NoTranscriptAvailableError as retry_exc:
-                        self.log_error("Transcript", retry_exc)
-                        if card:
-                            self.queue_card_status(card, "Transcript unavailable", state="failed")
-                    except Exception as retry_exc:
-                        self.log_error("Transcript", retry_exc)
-                        if card:
-                            self.queue_card_status(card, "Transcript failed", state="failed")
-            else:
-                self.log("Cookies selection declined.")
-                if card:
-                    self.queue_card_status(card, "Transcript failed", state="failed")
+                except NoTranscriptAvailableError as retry_exc:
+                    self.log_error("Transcript", retry_exc)
+                    if card:
+                        self.queue_card_status(card, "Transcript unavailable", state="failed")
+                except Exception as retry_exc:
+                    self.log_error("Transcript", retry_exc)
+                    if card:
+                        self.queue_card_status(card, "Transcript failed", state="failed")
+            elif card:
+                self.queue_card_status(card, "Transcript failed", state="failed")
         except NoTranscriptAvailableError as exc:
             self.log_error("Transcript", exc)
             if card:

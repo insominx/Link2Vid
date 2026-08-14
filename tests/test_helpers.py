@@ -1,8 +1,13 @@
 import unittest
 
 from link2vid.core.helpers import (
+    AUDIO_EXTRACT_FORMAT,
+    AUDIO_EXTRACT_FORMAT_SELECTOR,
+    audio_extract_format_selector,
+    audio_extract_postprocessors,
     entry_watch_url,
     get_format_options,
+    is_audio_extract_format,
     normalize_url,
     url_from_clipboard_text,
 )
@@ -59,6 +64,19 @@ class TestHelpers(unittest.TestCase):
         labels = {opt["label"] for opt in options}
         self.assertIn("bestvideo+bestaudio/best", formats)
         self.assertIn("Best (A+V)", labels)
+
+    def test_format_options_include_audio_mp3(self):
+        options = get_format_options()
+        audio = next(opt for opt in options if opt["format"] == AUDIO_EXTRACT_FORMAT)
+        self.assertEqual(audio["label"], "Audio (MP3)")
+        self.assertTrue(is_audio_extract_format(AUDIO_EXTRACT_FORMAT))
+        self.assertFalse(is_audio_extract_format("bestvideo"))
+        self.assertFalse(is_audio_extract_format(None))
+        self.assertEqual(audio_extract_format_selector(), AUDIO_EXTRACT_FORMAT_SELECTOR)
+        self.assertIn("best[acodec!=none]", AUDIO_EXTRACT_FORMAT_SELECTOR)
+        processors = audio_extract_postprocessors()
+        self.assertEqual(processors[0]["key"], "FFmpegExtractAudio")
+        self.assertEqual(processors[0]["preferredcodec"], "mp3")
 
     def test_entry_watch_url_resolution_order(self):
         entry = {

@@ -177,7 +177,9 @@ class _AppHarness(unittest.TestCase):
             "download_transcript",
             "handle_card_transcript",
             "entry_url_for_entry",
-            "confirm_cookies_retry",
+            "choose_cookies_browser",
+            "set_cookies_browser",
+            "_prepare_cookie_retry",
             "confirm_format_fallback",
             "confirm_ffmpeg_fallback",
             "clear_results",
@@ -222,8 +224,12 @@ class _AppHarness(unittest.TestCase):
         self.app.url_entry.get.return_value = ""
         self.app.ui_warn = mock.Mock()
         self.app.ui_confirm = mock.Mock(return_value=False)
+        self.app.ui_choose_cookies_browser = mock.Mock(return_value=None)
         self.app.ui_select_cookies = mock.Mock()
         self.app.cookies_path = None
+        self.app.cookies_browser = None
+        self.app.user_settings_path = self.out_dir / "settings.json"
+        self.app.footer = None
         self.app.whisper_models = ["tiny", "base", "small"]
         self.app.format_error = lambda stage, err: f"{stage}: {err}"
         self.app.last_action_kind = None
@@ -281,7 +287,7 @@ class TestVerifiedMediaAssociation(_AppHarness):
         media_path.write_bytes(b"exact-one")
         epoch = self.app.invalidate_verified_media(card)
 
-        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None):
+        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None, **_kwargs):
             if post_hook:
                 post_hook(str(media_path))
             return True
@@ -312,7 +318,7 @@ class TestVerifiedMediaAssociation(_AppHarness):
         second.write_bytes(b"second-file")
         epoch = self.app.invalidate_verified_media(card)
 
-        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None):
+        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None, **_kwargs):
             if post_hook:
                 post_hook(str(first))
                 post_hook(str(second))
@@ -339,7 +345,7 @@ class TestVerifiedMediaAssociation(_AppHarness):
         empty.write_bytes(b"")
         epoch = self.app.invalidate_verified_media(card)
 
-        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None):
+        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None, **_kwargs):
             if post_hook:
                 post_hook(str(missing))
                 post_hook(str(empty))
@@ -390,7 +396,7 @@ class TestVerifiedMediaAssociation(_AppHarness):
         epoch = self.app.invalidate_verified_media(card)
         outfile = self.out_dir / "Demo.mp4"
 
-        def fake_ffmpeg(media_url, output_file, headers, progress_hook=None, duration_seconds=None):
+        def fake_ffmpeg(media_url, output_file, headers, progress_hook=None, duration_seconds=None, **_kwargs):
             Path(output_file).write_bytes(b"hls-bytes")
 
         with mock.patch("link2vid.ui.main_window.download_with_ffmpeg", side_effect=fake_ffmpeg):
@@ -419,12 +425,45 @@ class TestVerifiedMediaAssociation(_AppHarness):
         self.assertEqual(card.state, "complete")
         self.assertEqual(card.status, "Complete")
 
+    def test_direct_audio_extract_writes_mp3_and_associates(self) -> None:
+        card = self._register_card()
+        epoch = self.app.invalidate_verified_media(card)
+        seen = {}
+
+        def fake_ffmpeg(media_url, output_file, headers, progress_hook=None, duration_seconds=None, **kwargs):
+            seen["output_file"] = output_file
+            seen["audio_only"] = kwargs.get("audio_only")
+            Path(output_file).write_bytes(b"mp3-bytes")
+
+        with mock.patch("link2vid.ui.main_window.download_with_ffmpeg", side_effect=fake_ffmpeg):
+            with mock.patch("threading.Thread") as thread_cls:
+                def capture_thread(target=None, daemon=None):
+                    return mock.Mock(start=lambda: target())
+
+                thread_cls.side_effect = capture_thread
+                self.app._download_direct_media(
+                    card,
+                    "https://example.com/stream.m3u8",
+                    {"Referer": "https://example.com/"},
+                    "Demo",
+                    media_epoch=epoch,
+                    audio_only=True,
+                )
+
+        self._drain_verified_media_queue()
+        expected = self.out_dir / "Demo.mp3"
+        self.assertTrue(seen["audio_only"])
+        self.assertEqual(Path(seen["output_file"]), expected)
+        associated = self.app.verified_media_by_card[card]
+        self.assertEqual(associated.path, expected)
+        self.assertEqual(card.state, "complete")
+
     def test_direct_hls_missing_file_fails_without_association(self) -> None:
         card = self._register_card()
         epoch = self.app.invalidate_verified_media(card)
         outfile = self.out_dir / "missing-hls.mp4"
 
-        def fake_ffmpeg(media_url, output_file, headers, progress_hook=None, duration_seconds=None):
+        def fake_ffmpeg(media_url, output_file, headers, progress_hook=None, duration_seconds=None, **_kwargs):
             return None
 
         with mock.patch("link2vid.ui.main_window.download_with_ffmpeg", side_effect=fake_ffmpeg):
@@ -2538,7 +2577,7 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
     ):
         """Install a download_manager.download that writes one audio file."""
 
-        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None):
+        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None, **_kwargs):
             if side_effect is not None:
                 result = side_effect(url, format_id, outtmpl, progress_hook, post_hook)
                 if result is not None:
@@ -2770,7 +2809,7 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
         self.app.queue_whisper_status = track_status
         self.app.queue_whisper_card_progress = track_progress
 
-        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None):
+        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None, **_kwargs):
             workspace = Path(outtmpl).parent
             audio_path = workspace / "adversarial.m4a"
             audio_path.write_bytes(b"audio")
@@ -2874,7 +2913,7 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
         preexisting_path.write_bytes(b"preexisting")
         ignored_while_preparing: list[bool] = []
 
-        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None):
+        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None, **_kwargs):
             workspace = Path(outtmpl).parent
             audio_path = workspace / "finished-only.m4a"
             audio_path.write_bytes(b"audio")
@@ -2914,7 +2953,7 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
 
         self.app.queue_whisper_card_progress = track_progress
 
-        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None):
+        def fake_download(url, format_id, outtmpl, progress_hook=None, post_hook=None, **_kwargs):
             workspace = Path(outtmpl).parent
             audio_path = workspace / "fraction-finished.m4a"
             audio_path.write_bytes(b"audio")
@@ -2956,17 +2995,17 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
 
         self._install_temp_download(side_effect=side_effect)
 
-        def confirm_and_observe(title, message):
+        def choose_and_observe():
             prompt_saw_clean.append(all(not ws.exists() for ws in workspaces))
-            return False
+            return None
 
-        self.app.ui_confirm = mock.Mock(side_effect=confirm_and_observe)
+        self.app.ui_choose_cookies_browser = mock.Mock(side_effect=choose_and_observe)
 
         with self._run_inline_threads():
             self.app.handle_card_whisper(card, "small")
         self._drain_whisper_queue()
 
-        self.app.ui_confirm.assert_called_once()
+        self.app.ui_choose_cookies_browser.assert_called_once()
         self.assertEqual(prompt_saw_clean, [True])
         self.assertTrue(all(not ws.exists() for ws in workspaces))
         self.fake_service.transcribe.assert_not_called()
@@ -2976,8 +3015,6 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
 
     def test_real_download_manager_applies_selected_cookie_on_retry(self) -> None:
         card = self._register_card()
-        cookies_file = self.out_dir / "cookies.txt"
-        cookies_file.write_text("# Netscape\n", encoding="utf-8")
         ydl_options: list[dict] = []
         download_attempts = {"count": 0}
 
@@ -3020,19 +3057,19 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
             log=lambda message: self.app.log_history.append(message),
             log_error=self.app.log_error,
             get_cookies_path=lambda: self.app.cookies_path,
+            get_cookies_browser=lambda: self.app.cookies_browser,
         )
         manager._browser_candidates = lambda: []
         self.app.download_manager = manager
         self.app.audio_source_resolver = AudioSourceResolver(
             download_manager=manager
         )
-        self.app.ui_confirm = mock.Mock(return_value=True)
 
-        def select_cookies():
+        def choose_browser():
             self.assertTrue(self.app._whisper_cookie_retry_lock.locked())
-            self.app.cookies_path = str(cookies_file)
+            return "brave"
 
-        self.app.ui_select_cookies = mock.Mock(side_effect=select_cookies)
+        self.app.ui_choose_cookies_browser = mock.Mock(side_effect=choose_browser)
 
         with mock.patch(
             "link2vid.core.downloader.yt_dlp.YoutubeDL",
@@ -3043,12 +3080,12 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
 
         self.assertEqual(download_attempts["count"], 2)
         self.assertEqual(len(ydl_options), 2)
-        self.assertNotIn("cookiefile", ydl_options[0])
+        self.assertNotIn("cookiesfrombrowser", ydl_options[0])
         self.assertEqual(ydl_options[1]["format"], "bestaudio")
-        self.assertEqual(ydl_options[1]["cookiefile"], str(cookies_file))
-        self.assertEqual(manager.last_cookies_mode, "cookies.txt")
-        self.app.ui_confirm.assert_called_once()
-        self.app.ui_select_cookies.assert_called_once()
+        self.assertEqual(ydl_options[1]["cookiesfrombrowser"], ("brave",))
+        self.assertEqual(manager.last_cookies_mode, "browser")
+        self.app.ui_choose_cookies_browser.assert_called_once()
+        self.assertEqual(self.app.cookies_browser, "brave")
         self.assertEqual(len(self.transcribe_calls), 1)
         snap = self.app.whisper_runs_by_card[card]
         self.assertEqual(snap.phase, WhisperPhase.COMPLETE)
@@ -3061,14 +3098,12 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
 
     def test_threaded_cookie_prompt_and_selection_queue_without_deadlock(self) -> None:
         card = self._register_card()
-        cookies_file = self.out_dir / "threaded-cookies.txt"
-        cookies_file.write_text("# Netscape\n", encoding="utf-8")
         workspaces: list[Path] = []
         attempts = {"count": 0}
         ui_order: list[str] = []
         retry_saw_lock: list[bool] = []
 
-        def download(url, format_id, outtmpl, progress_hook=None, post_hook=None):
+        def download(url, format_id, outtmpl, progress_hook=None, post_hook=None, **_kwargs):
             attempts["count"] += 1
             workspace = Path(outtmpl).parent
             workspaces.append(workspace)
@@ -3085,26 +3120,18 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
         self.app.audio_source_resolver = AudioSourceResolver(
             download_manager=self.app.download_manager
         )
-        self.app.ui_confirm = VideoDownloaderApp.ui_confirm.__get__(self.app)
-        self.app.ui_select_cookies = VideoDownloaderApp.ui_select_cookies.__get__(
+        self.app.ui_choose_cookies_browser = VideoDownloaderApp.ui_choose_cookies_browser.__get__(
             self.app
         )
 
-        def askyesno(title, message):
+        def choose_browser(parent, suggested=None):
             self.assertTrue(self.app._whisper_cookie_retry_lock.locked())
-            ui_order.append("confirm")
-            return True
-
-        def browse_cookies():
-            self.assertTrue(self.app._whisper_cookie_retry_lock.locked())
-            ui_order.append("select")
-            self.app.cookies_path = str(cookies_file)
-
-        self.app.browse_cookies = browse_cookies
+            ui_order.append("choose")
+            return "brave"
 
         with mock.patch(
-            "link2vid.ui.main_window.messagebox.askyesno",
-            side_effect=askyesno,
+            "link2vid.ui.main_window.prompt_cookie_browser",
+            side_effect=choose_browser,
         ):
             worker = self._start_direct_worker(card, "req-threaded-cookie")
             # Before the main test pumps "call", the worker must be waiting.
@@ -3114,7 +3141,7 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
             self.assertTrue(worker.is_alive())
             self._pump_ui_until_worker_stops(worker)
 
-        self.assertEqual(ui_order, ["confirm", "select"])
+        self.assertEqual(ui_order, ["choose"])
         self.assertEqual(attempts["count"], 2)
         self.assertEqual(retry_saw_lock, [True])
         self.assertEqual(len(self.transcribe_calls), 1)
@@ -3141,7 +3168,7 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
         release_a_retry = threading.Event()
         b_first_failed = threading.Event()
 
-        def download(url, format_id, outtmpl, progress_hook=None, post_hook=None):
+        def download(url, format_id, outtmpl, progress_hook=None, post_hook=None, **_kwargs):
             key = url.rsplit("/", 1)[-1]
             attempts[key] = attempts.get(key, 0) + 1
             workspace = Path(outtmpl).parent
@@ -3152,7 +3179,7 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
                 raise CookiesRequiredError(original=RuntimeError(f"auth-{key}"))
 
             self.assertTrue(self.app._whisper_cookie_retry_lock.locked())
-            applied_paths[key] = self.app.cookies_path
+            applied_paths[key] = self.app.cookies_browser
             if key == "a":
                 a_retry_entered.set()
                 self.assertTrue(
@@ -3165,20 +3192,16 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
                 post_hook(str(audio_path))
             return True
 
-        def confirm(title, message):
-            confirmations.append(threading.current_thread().name)
-            return True
-
-        def select():
+        def choose():
             name = threading.current_thread().name
-            self.app.cookies_path = str(cookie_a if name == "cookie-a" else cookie_b)
+            confirmations.append(name)
+            return "brave" if name == "cookie-a" else "chrome"
 
         self.app.download_manager.download = mock.Mock(side_effect=download)
         self.app.audio_source_resolver = AudioSourceResolver(
             download_manager=self.app.download_manager
         )
-        self.app.ui_confirm = mock.Mock(side_effect=confirm)
-        self.app.ui_select_cookies = mock.Mock(side_effect=select)
+        self.app.ui_choose_cookies_browser = mock.Mock(side_effect=choose)
 
         worker_a = self._start_direct_worker(
             card_a,
@@ -3205,9 +3228,9 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
         self.assertFalse(worker_b.is_alive())
         self._drain_whisper_queue()
 
-        self.assertEqual(confirmations, ["cookie-a", "cookie-b"])
-        self.assertEqual(applied_paths["a"], str(cookie_a))
-        self.assertEqual(applied_paths["b"], str(cookie_b))
+        self.assertEqual(confirmations, ["cookie-a"])
+        self.assertEqual(applied_paths["a"], "brave")
+        self.assertEqual(applied_paths["b"], "brave")
         self.assertEqual(attempts, {"a": 2, "b": 2})
         self.assertEqual(
             self.app.whisper_runs_by_card[card_a].phase,
@@ -3225,7 +3248,7 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
         card = self._register_card()
         workspaces: list[Path] = []
 
-        def download(url, format_id, outtmpl, progress_hook=None, post_hook=None):
+        def download(url, format_id, outtmpl, progress_hook=None, post_hook=None, **_kwargs):
             workspaces.append(Path(outtmpl).parent)
             raise CookiesRequiredError(original=RuntimeError("auth"))
 
@@ -3233,20 +3256,16 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
         self.app.audio_source_resolver = AudioSourceResolver(
             download_manager=self.app.download_manager
         )
-        self.app.ui_confirm = VideoDownloaderApp.ui_confirm.__get__(self.app)
-        self.app.ui_select_cookies = VideoDownloaderApp.ui_select_cookies.__get__(
+        self.app.ui_choose_cookies_browser = VideoDownloaderApp.ui_choose_cookies_browser.__get__(
             self.app
         )
-        self.app.browse_cookies = mock.Mock()
 
         with mock.patch(
-            "link2vid.ui.main_window.messagebox.askyesno",
+            "link2vid.ui.main_window.prompt_cookie_browser",
             side_effect=RuntimeError("window closing"),
         ):
             worker = self._start_direct_worker(card, "req-threaded-shutdown")
             self._pump_ui_until_worker_stops(worker)
-
-        self.app.browse_cookies.assert_not_called()
         self.assertEqual(self.app.download_manager.download.call_count, 1)
         self.fake_service.transcribe.assert_not_called()
         snapshot = self.app.whisper_runs_by_card[card]
@@ -3259,9 +3278,6 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
         card = self._register_card()
         workspaces: list[Path] = []
         attempts = {"count": 0}
-        cookies_file = self.out_dir / "cookies.txt"
-        cookies_file.write_text("# Netscape\n", encoding="utf-8")
-
         def side_effect(url, format_id, outtmpl, progress_hook, post_hook):
             attempts["count"] += 1
             workspace = Path(outtmpl).parent
@@ -3285,21 +3301,15 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
             return True
 
         self.app.download_manager.download = mock.Mock(side_effect=side_effect)
-        self.app.ui_confirm = mock.Mock(return_value=True)
-
-        def select_cookies():
-            self.app.cookies_path = str(cookies_file)
-
-        self.app.ui_select_cookies = mock.Mock(side_effect=select_cookies)
+        self.app.ui_choose_cookies_browser = mock.Mock(return_value="brave")
 
         with self._run_inline_threads():
             self.app.handle_card_whisper(card, "small")
         self._drain_whisper_queue()
 
         self.assertEqual(attempts["count"], 2)
-        self.app.ui_confirm.assert_called_once()
-        self.app.ui_select_cookies.assert_called_once()
-        self.assertEqual(self.app.cookies_path, str(cookies_file))
+        self.app.ui_choose_cookies_browser.assert_called_once()
+        self.assertEqual(self.app.cookies_browser, "brave")
         self.assertEqual(len(self.transcribe_calls), 1)
         snap = self.app.whisper_runs_by_card[card]
         self.assertEqual(snap.phase, WhisperPhase.COMPLETE)
@@ -3317,13 +3327,13 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
             raise CookiesRequiredError(original=RuntimeError("auth"))
 
         self.app.download_manager.download = mock.Mock(side_effect=side_effect)
-        self.app.ui_confirm = mock.Mock(return_value=False)
+        self.app.ui_choose_cookies_browser = mock.Mock(return_value=None)
 
         with self._run_inline_threads():
             self.app.handle_card_whisper(card, "small")
         self._drain_whisper_queue()
 
-        self.app.ui_select_cookies.assert_not_called()
+        self.app.ui_choose_cookies_browser.assert_called_once()
         self.fake_service.transcribe.assert_not_called()
         snap = self.app.whisper_runs_by_card[card]
         self.assertEqual(snap.phase, WhisperPhase.FAILED)
@@ -3338,19 +3348,18 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
             raise CookiesRequiredError(original=RuntimeError("auth"))
 
         self.app.download_manager.download = mock.Mock(side_effect=side_effect)
-        self.app.ui_confirm = mock.Mock(return_value=True)
-        self.app.cookies_path = None
-        self.app.ui_select_cookies = mock.Mock()
+        self.app.cookies_browser = "brave"
 
         with self._run_inline_threads():
             self.app.handle_card_whisper(card, "small")
         self._drain_whisper_queue()
 
-        self.app.ui_select_cookies.assert_called_once()
+        self.app.ui_choose_cookies_browser.assert_not_called()
         self.fake_service.transcribe.assert_not_called()
         snap = self.app.whisper_runs_by_card[card]
         self.assertEqual(snap.phase, WhisperPhase.FAILED)
-        self.assertIn("no cookies.txt selected", (snap.error_reason or "").lower())
+        self.assertIn("still required", (snap.error_reason or "").lower())
+        self.assertEqual(self.app.download_manager.download.call_count, 2)
 
     def test_second_cookie_failure_no_prompt_loop(self) -> None:
         card = self._register_card()
@@ -3362,20 +3371,14 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
             raise CookiesRequiredError(original=RuntimeError("still auth"))
 
         self.app.download_manager.download = mock.Mock(side_effect=side_effect)
-        self.app.ui_confirm = mock.Mock(return_value=True)
-
-        def select_cookies():
-            self.app.cookies_path = str(self.out_dir / "cookies.txt")
-
-        self.app.ui_select_cookies = mock.Mock(side_effect=select_cookies)
+        self.app.ui_choose_cookies_browser = mock.Mock(return_value="brave")
 
         with self._run_inline_threads():
             self.app.handle_card_whisper(card, "small")
         self._drain_whisper_queue()
 
         self.assertEqual(self.app.download_manager.download.call_count, 2)
-        self.app.ui_confirm.assert_called_once()
-        self.app.ui_select_cookies.assert_called_once()
+        self.app.ui_choose_cookies_browser.assert_called_once()
         self.fake_service.transcribe.assert_not_called()
         snap = self.app.whisper_runs_by_card[card]
         self.assertEqual(snap.phase, WhisperPhase.FAILED)
@@ -3389,7 +3392,9 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
             raise CookiesRequiredError(original=RuntimeError("auth"))
 
         self.app.download_manager.download = mock.Mock(side_effect=side_effect)
-        self.app.ui_confirm = mock.Mock(side_effect=RuntimeError("dialog failed"))
+        self.app.ui_choose_cookies_browser = mock.Mock(
+            side_effect=RuntimeError("dialog failed")
+        )
 
         with self._run_inline_threads():
             self.app.handle_card_whisper(card, "small")

@@ -44,7 +44,7 @@ def run() -> None:
     format_options = [
         ("Best (A+V)", "bestvideo+bestaudio/best"),
         ("Best video", "bestvideo"),
-        ("Best audio", "bestaudio"),
+        ("Audio (MP3)", "bestaudio"),
     ]
 
     # Exact Faster Whisper aliases for the demo; orchestration supplies these in-app.
@@ -82,9 +82,11 @@ def run() -> None:
     footer = FooterBar(
         main,
         output_path=r"C:\\Downloads",
-        cookies_path="cookies.txt",
+        cookies_browser="brave",
         on_change_output=lambda: log_drawer.append("Output change clicked."),
-        on_change_cookies=lambda: log_drawer.append("Cookies change clicked."),
+        on_change_cookies_browser=lambda browser: log_drawer.append(
+            f"Cookie browser set to {browser}."
+        ),
         on_copy_diagnostics=lambda: log_drawer.append("Diagnostics copied."),
     )
     footer.pack(fill="x", pady=(0, 12))

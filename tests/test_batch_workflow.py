@@ -78,6 +78,8 @@ class BatchHarness(unittest.TestCase):
         self.app.log_error = lambda stage, exc: self.app.log_history.append(f"{stage}: {exc}")
         self.app.ui_warn = mock.Mock()
         self.app.ui_confirm = mock.Mock(return_value=True)
+        self.app.ui_choose_cookies_browser = mock.Mock(return_value=None)
+        self.app.cookies_browser = None
         self.app.ui_ffmpeg_fallback = mock.Mock(return_value="continue")
         self.app.set_progress = mock.Mock()
         self.app.invalidate_verified_media = mock.Mock(return_value=0)
@@ -96,7 +98,8 @@ class BatchHarness(unittest.TestCase):
             "transcript_track_for_index", "_selected_indexes_ordered",
             "_refresh_batch_bar", "_freeze_batch_items", "_begin_batch_item",
             "_record_batch_outcome", "_run_batch_worker", "_finish_batch",
-            "confirm_cookies_retry", "confirm_format_fallback",
+            "choose_cookies_browser", "_prepare_cookie_retry",
+            "confirm_format_fallback",
             "confirm_ffmpeg_fallback",
         )
 
@@ -202,31 +205,34 @@ class BatchHarness(unittest.TestCase):
 
     def test_policy_caches_yes_and_no_once_per_kind(self):
         self.app.batch_prompt_policy = BatchPromptPolicy()
-        self.app.ui_confirm.side_effect = [False, True]
-        self.assertFalse(self.app.confirm_cookies_retry("video"))
-        self.assertFalse(self.app.confirm_cookies_retry("transcript"))
+        self.app.ui_choose_cookies_browser.side_effect = ["brave", "chrome"]
+        self.app.ui_confirm.side_effect = [True]
+        self.assertEqual(self.app.choose_cookies_browser(), "brave")
+        self.assertEqual(self.app.choose_cookies_browser(), "brave")
         self.assertTrue(self.app.confirm_format_fallback())
         self.assertTrue(self.app.confirm_format_fallback())
-        self.assertEqual(self.app.ui_confirm.call_count, 2)
+        self.assertEqual(self.app.ui_choose_cookies_browser.call_count, 1)
+        self.assertEqual(self.app.ui_confirm.call_count, 1)
 
     def test_no_policy_prompts_every_time(self):
         self.app.batch_prompt_policy = None
-        self.app.confirm_cookies_retry("video")
-        self.app.confirm_cookies_retry("video")
-        self.assertEqual(self.app.ui_confirm.call_count, 2)
+        self.app.ui_choose_cookies_browser.return_value = "brave"
+        self.app.choose_cookies_browser()
+        self.app.choose_cookies_browser()
+        self.assertEqual(self.app.ui_choose_cookies_browser.call_count, 2)
 
     def test_policy_is_safe_under_concurrent_calls(self):
         self.app.batch_prompt_policy = BatchPromptPolicy()
 
-        def answer(*_args):
+        def answer():
             time.sleep(0.01)
-            return True
+            return "brave"
 
-        self.app.ui_confirm.side_effect = answer
+        self.app.ui_choose_cookies_browser.side_effect = lambda: answer()
         results = []
         threads = [
             threading.Thread(
-                target=lambda: results.append(self.app.confirm_cookies_retry("video"))
+                target=lambda: results.append(self.app.choose_cookies_browser())
             )
             for _ in range(5)
         ]
@@ -234,8 +240,8 @@ class BatchHarness(unittest.TestCase):
             thread.start()
         for thread in threads:
             thread.join()
-        self.assertEqual(results, [True] * 5)
-        self.assertEqual(self.app.ui_confirm.call_count, 1)
+        self.assertEqual(results, ["brave"] * 5)
+        self.assertEqual(self.app.ui_choose_cookies_browser.call_count, 1)
 
     def _make_run(self, kind, items, skipped, default_count):
         from link2vid.ui.main_window import BatchRun
@@ -256,8 +262,9 @@ class RunnerReturnTests(unittest.TestCase):
         self.app.download_manager = mock.Mock()
         self.app.batch_prompt_policy = None
         self.app.ui_confirm = mock.Mock(return_value=False)
-        self.app.ui_select_cookies = mock.Mock()
+        self.app.ui_choose_cookies_browser = mock.Mock(return_value=None)
         self.app.cookies_path = None
+        self.app.cookies_browser = None
         self.app.last_error_reason = None
         self.app.last_transcript_source = None
         self.app.last_transcript_languages = []
@@ -275,7 +282,8 @@ class RunnerReturnTests(unittest.TestCase):
         self.app._verify_download_outputs = mock.Mock(return_value=[])
         _bind(
             self.app, "download_video", "download_transcript",
-            "confirm_cookies_retry", "confirm_format_fallback",
+            "choose_cookies_browser", "_prepare_cookie_retry",
+            "confirm_format_fallback",
         )
 
     def tearDown(self) -> None:
@@ -289,7 +297,7 @@ class RunnerReturnTests(unittest.TestCase):
         output = Path(self.tmp.name) / "video.mp4"
         output.write_bytes(b"data")
 
-        def download(_url, _format, _outtmpl, progress_hook=None, post_hook=None):
+        def download(_url, _format, _outtmpl, progress_hook=None, post_hook=None, **_kwargs):
             post_hook(str(output))
             return True
 
@@ -310,6 +318,20 @@ class RunnerReturnTests(unittest.TestCase):
     def test_declined_cookies_returns_false(self):
         self.app.download_manager.download.side_effect = CookiesRequiredError("cookies")
         self.assertFalse(self.app.download_video("https://x.test/v", "best", self.tmp.name))
+
+    def test_audio_format_requests_mp3_extract(self):
+        self.app.ffmpeg_available = True
+        self.app.download_manager.download.return_value = False
+        self.assertFalse(self.app.download_video("https://x.test/v", "bestaudio", self.tmp.name))
+        _args, kwargs = self.app.download_manager.download.call_args
+        self.assertTrue(kwargs["extract_audio"])
+
+    def test_audio_format_skips_mp3_extract_without_ffmpeg(self):
+        self.app.ffmpeg_available = False
+        self.app.download_manager.download.return_value = False
+        self.assertFalse(self.app.download_video("https://x.test/v", "bestaudio", self.tmp.name))
+        _args, kwargs = self.app.download_manager.download.call_args
+        self.assertFalse(kwargs["extract_audio"])
 
 
 if __name__ == "__main__":

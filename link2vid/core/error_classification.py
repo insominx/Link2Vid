@@ -43,6 +43,8 @@ def classify_error(err_text: str) -> tuple[str, str]:
     )):
         return "network/rate-limit", " (Hint: check your network or wait and retry.)"
     if any(token in msg for token in (
+        "dpapi",
+        "app-bound",
         "cookie",
         "cookies",
         "consent",
@@ -57,7 +59,7 @@ def classify_error(err_text: str) -> tuple[str, str]:
         "verify",
         "verification",
     )):
-        return "cookies/auth", " (Hint: try cookies.txt or browser cookies.)"
+        return "cookies/auth", " (Hint: close your browser and retry, or choose a cookie browser in the footer.)"
     if _has_impersonation_signal(msg):
         return "extractor drift/SABR", " (Hint: install yt-dlp impersonation dependencies or update yt-dlp.)"
     if any(token in msg for token in (
@@ -93,7 +95,7 @@ def get_error_guidance(err_text: str) -> tuple[str, str, str] | None:
             "Rate limited by site",
             "The site is temporarily rejecting requests (HTTP 429 / rate limit).\n\n"
             "Try again after waiting a bit, switch networks if possible, and consider\n"
-            "using browser cookies or cookies.txt. If this keeps happening,\n"
+            "using browser cookies from the footer picker. If this keeps happening,\n"
             "copy diagnostics and update yt-dlp before retrying.",
         )
 

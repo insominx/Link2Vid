@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from .cookie_prefs import normalize_cookies_browser
 from .errors import CookiesRequiredError, NoTranscriptAvailableError
+from .helpers import AUDIO_EXTRACT_FORMAT, audio_extract_format_selector, audio_extract_postprocessors
 import sys
 import subprocess
 import re
@@ -36,25 +38,24 @@ class DownloadManager:
         log_error: Callable[[str, Exception], None] | None = None,
         dev_defaults: dict | None = None,
         get_cookies_path: Callable[[], str | None] | None = None,
+        get_cookies_browser: Callable[[], str | None] | None = None,
     ) -> None:
         self.ydl_logger = ydl_logger
         self.log = log or (lambda _msg: None)
         self.log_error = log_error or (lambda _stage, _err: None)
         self.dev_defaults = dev_defaults or {}
         self.get_cookies_path = get_cookies_path or (lambda: None)
+        self.get_cookies_browser = get_cookies_browser or (
+            lambda: normalize_cookies_browser((self.dev_defaults or {}).get("cookies_browser"))
+        )
         self.last_cookies_mode = "none"
         self.last_cookies_browser = None
         self.last_js_runtime = None
         self.last_js_runtime_path = None
         self.last_remote_components = []
 
-    def _browser_name(self) -> str:
-        browser = None
-        if self.dev_defaults:
-            browser = self.dev_defaults.get("cookies_browser")
-        if not browser:
-            browser = "edge" if sys.platform.startswith("win") else "chrome"
-        return browser
+    def _preferred_browser(self) -> str | None:
+        return normalize_cookies_browser(self.get_cookies_browser())
 
     def _running_browsers(self) -> list[str]:
         candidates: list[str] = []
@@ -100,12 +101,20 @@ class DownloadManager:
         if cookies_path:
             opts["cookiefile"] = cookies_path
             self.last_cookies_mode = "cookies.txt"
+            return
+        browser = self._preferred_browser()
+        if browser:
+            opts["cookiesfrombrowser"] = (browser,)
+            self._mark_browser_cookies(browser)
+            self.log(f"[yt-dlp] Using cookies from {browser}")
 
     def _mark_browser_cookies(self, browser: str) -> None:
         self.last_cookies_mode = "browser"
         self.last_cookies_browser = browser
 
     def _is_cookie_error(self, err: Exception) -> bool:
+        if self._is_cookie_access_error(err):
+            return True
         message = str(err).lower()
         signals = (
             "account",
@@ -126,13 +135,62 @@ class DownloadManager:
         )
         return any(token in message for token in signals)
 
+    def _is_media_forbidden(self, err: Exception) -> bool:
+        message = str(err).lower()
+        return "403" in message or "forbidden" in message
+
+    def _cookiesfrombrowser(self, opts: dict) -> str | None:
+        value = opts.get("cookiesfrombrowser")
+        if isinstance(value, tuple) and value:
+            browser = value[0]
+            return browser if isinstance(browser, str) and browser else None
+        return None
+
+    def _retry_with_browser_cookies(self, url: str, opts: dict, first_err: Exception, attempt):
+        """Try remaining browsers, then a cookieless retry if the first attempt used cookies."""
+        site_label = self._site_label(url)
+        last_err = first_err
+        already = self._cookiesfrombrowser(opts)
+        if already:
+            self.log(
+                f"[yt-dlp] {already} cookies failed; trying other browsers for {site_label}."
+            )
+        candidates = [browser for browser in self._browser_candidates() if browser != already]
+        if candidates:
+            self.log(f"[yt-dlp] Browser cookie candidates: {', '.join(candidates)}")
+        for browser in candidates:
+            self.log(f"[yt-dlp] Retry with cookies from browser ({browser}) for {site_label}…")
+            try:
+                retry_opts = dict(opts)
+                retry_opts.pop("cookiefile", None)
+                retry_opts["cookiesfrombrowser"] = (browser,)
+                result = attempt(retry_opts)
+                self._mark_browser_cookies(browser)
+                return result
+            except Exception as retry_err:
+                last_err = self._note_browser_cookie_failure(browser, retry_err, last_err)
+                continue
+        self.log("[yt-dlp] All browser cookie attempts failed.")
+        if already:
+            self.log("[yt-dlp] Retrying without browser cookies…")
+            bare_opts = dict(opts)
+            bare_opts.pop("cookiesfrombrowser", None)
+            try:
+                result = attempt(bare_opts)
+                self.last_cookies_mode = "none"
+                self.last_cookies_browser = None
+                return result
+            except Exception as bare_err:
+                self.log(f"[yt-dlp] Cookieless retry failed: {self._format_exception(bare_err)}")
+                if not self._is_cookie_access_error(bare_err):
+                    last_err = bare_err
+        raise CookiesRequiredError(original=last_err) from first_err
+
     def _browser_candidates(self) -> list[str]:
         ordered: list[str] = []
         seen = set()
 
-        preferred = None
-        if self.dev_defaults:
-            preferred = self.dev_defaults.get("cookies_browser")
+        preferred = self._preferred_browser()
         if preferred and preferred not in seen:
             seen.add(preferred)
             ordered.append(preferred)
@@ -200,7 +258,7 @@ class DownloadManager:
     def _cookie_failure_hint(self, err: Exception) -> str | None:
         msg = self._strip_ansi(str(err) or "").lower()
         if "dpapi" in msg:
-            return "Hint: Windows DPAPI decrypt failed. Close the browser and retry, or use cookies.txt."
+            return "Hint: Windows could not decrypt Chrome cookies (DPAPI). Link2Vid will try other browsers, then continue without cookies."
         if "could not copy chrome cookie database" in msg:
             return "Hint: Browser cookie database is locked. Fully close the browser (including background processes) and retry."
         if "could not find" in msg and "cookies database" in msg:
@@ -378,29 +436,17 @@ class DownloadManager:
                     return info["entries"]
                 return [info]
         except Exception as first_err:
-            if self._should_try_browser_cookies(url, first_err):
-                site_label = self._site_label(url)
-                last_err = first_err
-                candidates = self._browser_candidates()
-                self.log(f"[yt-dlp] Browser cookie candidates: {', '.join(candidates)}")
-                for browser in candidates:
-                    self.log(f"[yt-dlp] Retry with cookies from browser ({browser}) for {site_label}…")
-                    try:
-                        retry_opts = dict(ydl_opts)
-                        retry_opts.pop("cookiefile", None)
-                        retry_opts["cookiesfrombrowser"] = (browser,)
-                        with yt_dlp.YoutubeDL(retry_opts) as ydl:
-                            info = ydl.extract_info(url, download=False)
-                        self._mark_browser_cookies(browser)
-                        if "entries" in info:
-                            return info["entries"]
-                        return [info]
-                    except Exception as retry_err:
-                        last_err = self._note_browser_cookie_failure(browser, retry_err, last_err)
-                        continue
-                self.log("[yt-dlp] All browser cookie attempts failed; falling back to cookies.txt prompt.")
-                raise CookiesRequiredError(original=last_err) from first_err
-            raise
+            if not self._should_try_browser_cookies(url, first_err):
+                raise
+
+            def extract(retry_opts: dict):
+                with yt_dlp.YoutubeDL(retry_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                if "entries" in info:
+                    return info["entries"]
+                return [info]
+
+            return self._retry_with_browser_cookies(url, ydl_opts, first_err, extract)
 
     def download(
         self,
@@ -409,43 +455,58 @@ class DownloadManager:
         out_path: str,
         progress_hook: Callable | None = None,
         post_hook: Callable[[str], None] | None = None,
+        extract_audio: bool = False,
     ) -> bool:
         self._reset_cookie_state()
+        resolved_format = format_id
+        if extract_audio and format_id == AUDIO_EXTRACT_FORMAT:
+            resolved_format = audio_extract_format_selector()
+            self.log(f"[yt-dlp] Audio extract format: {resolved_format}")
         opts = {
-            "format": format_id,
+            "format": resolved_format,
             "outtmpl": out_path,
             "progress_hooks": [progress_hook] if progress_hook else [],
             "post_hooks": [post_hook] if post_hook else [],
             "quiet": True,
             "logger": self.ydl_logger,
         }
+        if extract_audio:
+            opts["postprocessors"] = audio_extract_postprocessors()
         self._apply_cookies(opts)
         self._apply_js_runtime_opts(opts)
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
+
+        def download_with(retry_opts: dict):
+            with yt_dlp.YoutubeDL(retry_opts) as ydl:
                 ydl.download([url])
             return True
+
+        def retry_audio_from_muxed(err: Exception) -> bool:
+            if not extract_audio or (opts.get("format") or "") == "best":
+                return False
+            original = getattr(err, "original", None)
+            if not (self._is_media_forbidden(err) or (original is not None and self._is_media_forbidden(original))):
+                return False
+            self.log("[yt-dlp] Audio-only stream blocked; extracting MP3 from a muxed file instead.")
+            muxed_opts = dict(opts)
+            muxed_opts["format"] = "best"
+            try:
+                return download_with(muxed_opts)
+            except Exception as muxed_err:
+                self.log(f"[yt-dlp] Muxed audio extract failed: {self._format_exception(muxed_err)}")
+                return False
+
+        try:
+            return download_with(opts)
         except Exception as first_err:
             if self._should_try_browser_cookies(url, first_err):
-                site_label = self._site_label(url)
-                last_err = first_err
-                candidates = self._browser_candidates()
-                self.log(f"[yt-dlp] Browser cookie candidates: {', '.join(candidates)}")
-                for browser in candidates:
-                    self.log(f"[yt-dlp] Download retry with cookies from browser ({browser}) for {site_label}…")
-                    try:
-                        retry_opts = dict(opts)
-                        retry_opts.pop("cookiefile", None)
-                        retry_opts["cookiesfrombrowser"] = (browser,)
-                        with yt_dlp.YoutubeDL(retry_opts) as ydl:
-                            ydl.download([url])
-                        self._mark_browser_cookies(browser)
+                try:
+                    return self._retry_with_browser_cookies(url, opts, first_err, download_with)
+                except CookiesRequiredError as cookie_err:
+                    if retry_audio_from_muxed(cookie_err):
                         return True
-                    except Exception as retry_err:
-                        last_err = self._note_browser_cookie_failure(browser, retry_err, last_err)
-                        continue
-                self.log("[yt-dlp] All browser cookie attempts failed; falling back to cookies.txt prompt.")
-                raise CookiesRequiredError(original=last_err) from first_err
+                    raise
+            if retry_audio_from_muxed(first_err):
+                return True
             self.log_error("Download", first_err)
             return False
 
@@ -498,23 +559,6 @@ class DownloadManager:
         try:
             return attempt(opts)
         except Exception as first_err:
-            if self._should_try_browser_cookies(url, first_err):
-                site_label = self._site_label(url)
-                last_err = first_err
-                candidates = self._browser_candidates()
-                self.log(f"[yt-dlp] Browser cookie candidates: {', '.join(candidates)}")
-                for browser in candidates:
-                    self.log(f"[yt-dlp] Transcript retry with cookies from browser ({browser}) for {site_label}…")
-                    try:
-                        retry_opts = dict(opts)
-                        retry_opts.pop("cookiefile", None)
-                        retry_opts["cookiesfrombrowser"] = (browser,)
-                        result = attempt(retry_opts)
-                        self._mark_browser_cookies(browser)
-                        return result
-                    except Exception as retry_err:
-                        last_err = self._note_browser_cookie_failure(browser, retry_err, last_err)
-                        continue
-                self.log("[yt-dlp] All browser cookie attempts failed; falling back to cookies.txt prompt.")
-                raise CookiesRequiredError(original=last_err) from first_err
-            raise
+            if not self._should_try_browser_cookies(url, first_err):
+                raise
+            return self._retry_with_browser_cookies(url, opts, first_err, attempt)

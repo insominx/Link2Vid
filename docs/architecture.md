@@ -48,16 +48,16 @@ User URL
   → UI renders VideoCard list (batched with Load more)
 ```
 
-Auth routing: when yt-dlp fails with a cookie/auth signal, `VideoFetcher` returns `NeedsSelenium` if the exception chain shows a login redirect (`Unsupported URL` to `/login`, `/users/login`, `/sign_in`, or `/sign-in`), if username+password were already supplied, or if the URL matches a configured `developer.json` credential domain. Unconfigured generic cookie failures still return `NeedsCookies` so browser cookies / cookies.txt remain the path for ordinary sites. Inspect the full exception chain — the final `CookiesRequiredError` message alone often loses the login redirect.
+Auth routing: when yt-dlp fails with a cookie/auth signal, `VideoFetcher` returns `NeedsSelenium` if the exception chain shows a login redirect (`Unsupported URL` to `/login`, `/users/login`, `/sign_in`, or `/sign-in`), if username+password were already supplied, or if the URL matches a configured `developer.json` credential domain. Unconfigured generic cookie failures still return `NeedsCookies` so the footer browser picker and automatic browser-cookie lookup remain the path for ordinary sites. Inspect the full exception chain — the final `CookiesRequiredError` message alone often loses the login redirect.
 
 Fetch runs off the UI thread via `ThreadPoolExecutor`. Results and logs reach widgets through `ui_queue` + `root.after`.
 
 ## Download flow
 
-Per card, user picks a format (Best A+V / Best video / Best audio) or Transcript.
+Per card, user picks a format (Best A+V / Best video / Audio MP3) or Transcript. **Audio (MP3)** prefers a muxed file that already has audio (`best[acodec!=none]/best/bestaudio`) and extracts a playable MP3. That matches YouTube cases where **Best (A+V)** works but a dedicated `bestaudio` URL returns HTTP 403. Direct-media/HLS entries honor the same choice via ffmpeg (`-vn`). Whisper temporary `bestaudio` acquisition is unchanged and does not convert to MP3.
 
-- **yt-dlp path** — standard sites, playlists; `DownloadManager` with progress hooks.
-- **Direct media path** — entries with `_ffmpeg_headers` use `download_with_ffmpeg`; progress uses `ffmpeg_progress_display` for coherent elapsed/total display. On Windows, ffmpeg/ffprobe subprocesses launch with `CREATE_NO_WINDOW` so a closable console cannot abort an in-flight download.
+- **yt-dlp path** — standard sites, playlists; `DownloadManager` with progress hooks. **Audio (MP3)** adds an `FFmpegExtractAudio` postprocessor (`extract_audio=True`); Whisper temporary `bestaudio` downloads leave this off.
+- **Direct media path** — entries with `_ffmpeg_headers` use `download_with_ffmpeg`; **Audio (MP3)** writes `.mp3` with `-vn` instead of copying video. Progress uses `ffmpeg_progress_display` for coherent elapsed/total display. On Windows, ffmpeg/ffprobe subprocesses launch with `CREATE_NO_WINDOW` so a closable console cannot abort an in-flight download.
 - **Transcript path** — caption/subtitle files only; no media mux.
 
 Output names use `sanitize_filename` + `unique_output_path` (collision suffix, no silent overwrite).
@@ -80,7 +80,7 @@ Whisper click
   → AudioSourceResolver
        1. revalidate and reuse the exact previously downloaded file, or
        2. download bestaudio into an action-owned temporary workspace
-          (one cookies.txt retry when required)
+          (one browser-cookie prompt when no preferred browser is saved)
   → WhisperService
        1. load/reuse the selected model from the shared model cache
        2. use CUDA when CTranslate2 reports a device; otherwise select CPU once
@@ -101,6 +101,7 @@ Model weights live at `%LOCALAPPDATA%\Link2Vid\models` (fallback `~/.link2vid/mo
 ## Local configuration
 
 - `developer.json` (gitignored) — optional `use_defaults`, `cookies_browser`, per-domain login credentials.
+- `%APPDATA%/Link2Vid/settings.json` — persisted footer cookie-browser preference.
 - **Dev mode:** resolved from cwd, then entry script directory, then `%APPDATA%/Link2Vid/`.
 - **Frozen (packaged) mode:** resolved from directory containing `Link2Vid.exe`, then `%APPDATA%/Link2Vid/`. Build may copy repo-root `developer.json` into `release/Link2Vid/`.
 - Credentials apply only when the fetch URL matches a configured domain (including subdomains).
