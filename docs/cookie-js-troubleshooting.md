@@ -30,15 +30,51 @@ For app architecture and fetch routing, see [architecture.md](./architecture.md)
 
 ## Windows browser cookies
 
-yt-dlp has to *copy and decrypt* the browser cookie database. A listed browser is not enough.
+yt-dlp has to *copy and decrypt* the browser cookie database, and on current Windows both steps can fail. Since Chrome 127, Chromium browsers encrypt cookies with **App-Bound Encryption**, which yt-dlp cannot decrypt at all ([yt-dlp #10927](https://github.com/yt-dlp/yt-dlp/issues/10927)) — closing the browser does not help. In practice this means **Chrome, Brave, and Edge cookies are unavailable**, whatever the footer menu offers.
 
 | Symptom | Meaning | What to do |
 |---|---|---|
-| Could not copy Chrome cookie database | Brave/Chrome/Edge is still running and the DB is locked | Fully quit the browser, including background/tray processes, then retry |
-| Failed to decrypt with DPAPI | Chrome App-Bound Encryption blocked cookie decryption | Link2Vid continues with other browsers, then without cookies. Prefer Brave/Firefox in the footer, and fully quit that browser first |
-| Could not find firefox/edge cookies database | That browser is not installed, or has no profile | Ignore it; choose the browser you actually use in the footer |
+| Failed to decrypt with DPAPI | App-Bound Encryption; the browser being closed makes no difference | Use Firefox, or a cookies.txt export. This browser can never supply cookies |
+| Could not copy Chrome cookie database | That Chromium browser is running and the DB is locked | Fully quit it (including background/tray processes) — but note decryption may still fail for the reason above |
+| Could not find firefox/edge cookies database | That browser is not installed, or has no profile | Ignore it; it is only a fallback candidate |
 
-On a machine that only has Brave (or only Chrome), Edge/Firefox attempts will always fail. Close the browser you are logged into, set it in the footer **Cookies** menu, and retry.
+Because of this, Link2Vid tries **without cookies first** and only escalates to browser cookies when the site actually asks for sign-in. Choosing a browser in the footer marks it as a deliberate choice and uses it immediately for the rest of that session.
+
+### cookies.txt export
+
+For genuinely gated content (private, members-only, age-restricted), a cookies.txt export is the only cookie route that still works on Windows, since Chromium cookies cannot be decrypted at all (see above).
+
+1. Install a cookies-export extension (e.g. "Get cookies.txt LOCALLY" for Chrome/Edge/Brave, or "cookies.txt" for Firefox).
+2. Visit the site while logged in and export cookies to a `.txt` file (Netscape format).
+3. In Link2Vid's footer, click **cookies.txt...** next to the Cookies menu and select that file.
+4. Link2Vid remembers the path and uses it for every download from then on.
+
+Re-export the file when the session expires or after you sign out/in.
+
+Do **not** reach for this to fix a plain 403 on a public video — that is the PO Token problem below, and cookies cannot fix it.
+
+## HTTP 403 on public videos (the 1 MiB cap)
+
+If public YouTube videos fail with `unable to download video data: HTTP Error 403: Forbidden`, you are not missing cookies. YouTube serves clients it considers unverified only the **first mebibyte** of a format URL and refuses everything after it. Confirmed against the media URL directly:
+
+| Request | Result |
+|---|---|
+| `Range: bytes=0-1048576` | 206, full mebibyte returned |
+| `Range: bytes=0-1500000` | 403 |
+| `Range: bytes=1048576-2097151` | 403 |
+| no `Range` header | 403 |
+
+So any range starting past the first mebibyte, or larger than it, is refused. The signature is easy to recognise: metadata and format listing succeed, `--test` (first 10 KB) succeeds, and the full download 403s — on *every* video, not just one.
+
+**The fix is a different player client.** The default client hits the cap while an embedded client still serves whole files:
+
+```bash
+yt-dlp --extractor-args "youtube:player_client=web_embedded" URL
+```
+
+Link2Vid does this automatically: on a media 403 it retries YouTube downloads against `web_embedded`, then `tv_embedded`, then `mweb`, and logs which one worked. Nothing to install and no cookies involved.
+
+Things that do **not** fix this, all verified: updating yt-dlp, browser cookies, a cookies.txt export, `--http-chunk-size`, and running a PO Token provider (the token is minted for `web_safari`, which returns no formats, while media comes from `android_vr`, which yt-dlp never tokenises). If the fallback clients are ever capped too, the fix is to find a client that still works and add it to `YOUTUBE_PLAYER_CLIENT_FALLBACKS` in `link2vid/core/downloader.py` — not to install anything.
 
 ## Common errors
 

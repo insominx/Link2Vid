@@ -42,6 +42,16 @@ def classify_error(err_text: str) -> tuple[str, str]:
         "http error 500",
     )):
         return "network/rate-limit", " (Hint: check your network or wait and retry.)"
+    # A 403 on the *media stream* (after formats resolved fine) is not an auth
+    # problem. YouTube serves these URLs only to clients that present a GVS PO
+    # Token; without one the first request may succeed and the rest 403. No
+    # cookie setting can fix it, so do not send the user to the cookie menu.
+    if "unable to download video data" in msg and ("403" in msg or "forbidden" in msg):
+        return "media 403/player client", (
+            " (Hint: YouTube served only the first megabyte to this player client. "
+            "Link2Vid retries with web_embedded/tv_embedded/mweb automatically; if all "
+            "of them fail the video may need a different client. Cookies do not fix this.)"
+        )
     if any(token in msg for token in (
         "dpapi",
         "app-bound",

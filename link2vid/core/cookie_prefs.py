@@ -89,3 +89,35 @@ def store_preferred_cookies_browser(
         settings.pop("cookies_browser", None)
     save_user_settings(settings, settings_file)
     return normalized
+
+
+def load_preferred_cookies_path(
+    *,
+    settings: dict | None = None,
+    dev_defaults: dict | None = None,
+    path: Path | None = None,
+) -> str | None:
+    data = settings if settings is not None else load_user_settings(path)
+    stored = (data or {}).get("cookies_path")
+    if isinstance(stored, str) and stored.strip():
+        return stored.strip()
+    dev_value = (dev_defaults or {}).get("cookies_path")
+    if isinstance(dev_value, str) and dev_value.strip():
+        return dev_value.strip()
+    return None
+
+
+def store_preferred_cookies_path(
+    cookies_path: str | None,
+    *,
+    path: Path | None = None,
+) -> str | None:
+    settings_file = path or user_settings_path()
+    settings = load_user_settings(settings_file)
+    normalized = cookies_path.strip() if isinstance(cookies_path, str) and cookies_path.strip() else None
+    if normalized:
+        settings["cookies_path"] = normalized
+    else:
+        settings.pop("cookies_path", None)
+    save_user_settings(settings, settings_file)
+    return normalized

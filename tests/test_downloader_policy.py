@@ -27,7 +27,6 @@ class TestDownloaderPolicy(unittest.TestCase):
     def test_should_try_browser_cookies(self):
         manager = DownloadManager(ydl_logger=DummyLogger())
         self.assertTrue(manager._should_try_browser_cookies(f"https://{VIDEO_HOST_A}/vid", Exception("login required")))
-        self.assertTrue(manager._should_try_browser_cookies(f"https://{VIDEO_HOST_A}/watch/1", Exception("HTTP Error 403")))
         self.assertTrue(
             manager._should_try_browser_cookies(
                 f"https://{VIDEO_HOST_A}/watch/1",
@@ -35,6 +34,22 @@ class TestDownloaderPolicy(unittest.TestCase):
             )
         )
         self.assertFalse(manager._should_try_browser_cookies(f"https://{VIDEO_HOST_A}/watch/1", Exception("timeout")))
+
+    def test_media_403_is_not_treated_as_an_auth_signal(self):
+        """A 403 on the media stream means PO Token/throttling, not missing cookies.
+
+        Escalating it to the browser-cookie ladder wastes an attempt per installed
+        browser and reports a misleading "cookies/auth" cause to the user.
+        """
+        manager = DownloadManager(ydl_logger=DummyLogger())
+        for message in (
+            "unable to download video data: HTTP Error 403: Forbidden",
+            "HTTP Error 403: Forbidden",
+        ):
+            self.assertFalse(
+                manager._should_try_browser_cookies(f"https://{VIDEO_HOST_A}/watch/1", Exception(message)),
+                msg=message,
+            )
 
     def test_should_not_try_browser_cookies_for_non_auth_error(self):
         manager = DownloadManager(ydl_logger=DummyLogger())
@@ -78,7 +93,7 @@ class TestDownloaderPolicy(unittest.TestCase):
         )
 
     def test_download_preserves_original_error_when_cookie_access_fails(self):
-        first_err = Exception("unable to download video data: HTTP Error 403: Forbidden")
+        first_err = Exception("Sign in to confirm you're not a bot")
         access_err = Exception("could not find firefox cookies database in Profiles")
 
         class FakeYoutubeDL:
@@ -104,6 +119,58 @@ class TestDownloaderPolicy(unittest.TestCase):
         self.assertIs(ctx.exception.original, first_err)
         self.assertEqual(manager.last_cookies_mode, "none")
         self.assertIsNone(manager.last_cookies_browser)
+
+    def test_media_403_falls_back_through_youtube_player_clients(self):
+        """YouTube caps unverified clients at ~1 MiB, then 403s every later range.
+
+        An embedded client often still serves the whole file, so a media 403 must
+        walk the alternatives instead of failing or blaming cookies.
+        """
+        seen = []
+
+        class FakeYoutubeDL:
+            def __init__(self, opts):
+                self.opts = opts
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def download(self, _urls):
+                client = (self.opts.get("extractor_args", {}).get("youtube", {}).get("player_client") or [None])[0]
+                seen.append(client)
+                if client == "web_embedded":
+                    return None
+                raise Exception("unable to download video data: HTTP Error 403: Forbidden")
+
+        manager = DownloadManager(ydl_logger=DummyLogger())
+        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+            self.assertTrue(manager.download("https://www.youtube.com/watch?v=abc", "best", "out"))
+        self.assertEqual(seen, [None, "web_embedded"])
+        self.assertEqual(manager.last_player_client, "web_embedded")
+
+    def test_media_403_does_not_switch_clients_for_non_youtube_sites(self):
+        seen = []
+
+        class FakeYoutubeDL:
+            def __init__(self, opts):
+                seen.append(opts.get("extractor_args"))
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def download(self, _urls):
+                raise Exception("unable to download video data: HTTP Error 403: Forbidden")
+
+        manager = DownloadManager(ydl_logger=DummyLogger())
+        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+            self.assertFalse(manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out"))
+        self.assertEqual(seen, [None])
 
     def test_download_extract_audio_adds_mp3_postprocessor(self):
         captured = {}
@@ -179,7 +246,13 @@ class TestDownloaderPolicy(unittest.TestCase):
         self.assertEqual(captured["format"], "bestaudio")
         self.assertNotIn("postprocessors", captured)
 
-    def test_download_uses_preferred_browser_on_first_attempt(self):
+    def test_first_attempt_is_cookieless_even_with_a_preferred_browser(self):
+        """Browser cookies are an escalation, not the default.
+
+        Reading them is slow, fails outright while the browser is running, and is
+        impossible on Chromium browsers with App-Bound Encryption. A public video
+        must not pay that cost, so the first attempt carries no cookies.
+        """
         captured = {}
 
         class FakeYoutubeDL:
@@ -201,9 +274,9 @@ class TestDownloaderPolicy(unittest.TestCase):
         )
         with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             self.assertTrue(manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out"))
-        self.assertEqual(captured["cookiesfrombrowser"], ("brave",))
-        self.assertEqual(manager.last_cookies_mode, "browser")
-        self.assertEqual(manager.last_cookies_browser, "brave")
+        self.assertNotIn("cookiesfrombrowser", captured)
+        self.assertEqual(manager.last_cookies_mode, "none")
+        self.assertIsNone(manager.last_cookies_browser)
 
     def test_preferred_browser_dpapi_falls_through_to_other_browser(self):
         dpapi_err = Exception("Failed to decrypt with DPAPI")
@@ -222,11 +295,13 @@ class TestDownloaderPolicy(unittest.TestCase):
             def download(self, _urls):
                 browser = (self.opts.get("cookiesfrombrowser") or (None,))[0]
                 seen.append(browser)
+                if browser is None:
+                    raise Exception("Sign in to confirm you're not a bot")
                 if browser == "chrome":
                     raise dpapi_err
                 if browser == "brave":
                     return None
-                raise Exception("HTTP Error 403: Forbidden")
+                raise Exception("Sign in to confirm you're not a bot")
 
         manager = DownloadManager(
             ydl_logger=DummyLogger(),
@@ -235,10 +310,17 @@ class TestDownloaderPolicy(unittest.TestCase):
         manager._browser_candidates = lambda: ["chrome", "brave", "edge"]
         with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             self.assertTrue(manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out"))
-        self.assertEqual(seen, ["chrome", "brave"])
+        # Cookieless first, then the preferred browser, then the rest.
+        self.assertEqual(seen, [None, "chrome", "brave"])
         self.assertEqual(manager.last_cookies_browser, "brave")
 
-    def test_preferred_browser_dpapi_falls_back_to_cookieless(self):
+    def test_undecryptable_browsers_still_surface_the_site_error(self):
+        """Chromium App-Bound Encryption makes browser cookies unreadable.
+
+        When every candidate fails that way the user must still see why the site
+        refused, not a cookie-plumbing error they cannot act on.
+        """
+        site_err = Exception("Sign in to confirm you're not a bot")
         dpapi_err = Exception("Failed to decrypt with DPAPI")
         seen = []
 
@@ -257,7 +339,7 @@ class TestDownloaderPolicy(unittest.TestCase):
                 seen.append(browser)
                 if browser:
                     raise dpapi_err
-                return None
+                raise site_err
 
         manager = DownloadManager(
             ydl_logger=DummyLogger(),
@@ -265,8 +347,10 @@ class TestDownloaderPolicy(unittest.TestCase):
         )
         manager._browser_candidates = lambda: ["chrome", "brave"]
         with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
-            self.assertTrue(manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out"))
-        self.assertEqual(seen, ["chrome", "brave", None])
+            with self.assertRaises(CookiesRequiredError) as ctx:
+                manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out")
+        self.assertEqual(seen, [None, "chrome", "brave"])
+        self.assertIs(ctx.exception.original, site_err)
         self.assertEqual(manager.last_cookies_mode, "none")
         self.assertIsNone(manager.last_cookies_browser)
 
@@ -298,7 +382,7 @@ class TestDownloaderPolicy(unittest.TestCase):
         self.assertEqual(manager.last_cookies_mode, "cookies.txt")
 
     def test_download_marks_browser_cookies_only_after_success(self):
-        first_err = Exception("HTTP Error 403: Forbidden")
+        first_err = Exception("Sign in to confirm you're not a bot")
 
         class FakeYoutubeDL:
             def __init__(self, opts):

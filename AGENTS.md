@@ -56,6 +56,13 @@ python -m pytest tests/test_fetcher.py
 python -m pytest tests/test_ui_progress.py
 ```
 
+Rules when interpreting results:
+
+- Before attributing a failing test to your change, re-run it against a clean baseline (stash or checkout). Report pre-existing failures as pre-existing; do not silently absorb or opportunistically "fix" them.
+- When a change deliberately inverts a default or policy, the tests asserting the old default are **specifications, not obstacles**. Rewrite them to state the new intent and the reason for it; never loosen an assertion to get green.
+- A test that fails because it encoded the old default is signal that the change is real. A test that fails for an unrelated reason is signal that you broke something — tell the two apart before proceeding.
+- Revert environment mutations made while investigating (installed packages, cloned repos, started services) once they prove unnecessary, and state what was intentionally left in place.
+
 ## Repo layout (high level)
 
 | Area | Role |
