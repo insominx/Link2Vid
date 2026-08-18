@@ -13,8 +13,14 @@ Bucket the failure first:
 - **Codec/tooling missing** — ffmpeg or similar not available
 - **Extractor drift** — upstream site changed; update yt-dlp
 - **Network/throttle** — 429/403, timeouts
+- **Service-side gating** — the remote accepts the request but serves only a degraded subset
 
 Do not add retries until you know the bucket; retries can mask root cause and worsen throttling.
+
+Two rules that prevent the most expensive mistakes:
+
+- A generic transport status does not identify a bucket on its own. The same code appears in auth, throttle, and gating failures. Require a **distinctive** signal before assigning a bucket.
+- Treat any classification emitted by the system under investigation as a **hypothesis, not evidence**. If remediation derived from that label keeps failing, suspect the label before adding more remediation.
 
 ## 2) Evidence-first debugging
 
@@ -104,7 +110,46 @@ When plan review says proceed:
 - Tier acceptance: P0 (correct count, playable inputs, minimum naming) vs P1 (rich metadata).
 - Fix display-only defects at the presentation boundary without changing download semantics.
 
-## 12) Symptom → strategy map
+## 12) Isolate the layer before theorizing
+
+Establish *where* the failure lives before designing any fix. Each step is cheap and eliminates a whole class of theories:
+
+1. **Reproduce with the third-party tool alone**, outside the app. If the bare tool fails identically, the defect is not in your integration and no app-side change can fix it — stop editing app code.
+2. **Enable the tool's verbose/debug output early.** It routinely names the mechanism, the client profile in use, and which sub-component produced the failure. Hidden diagnostics end speculation faster than any amount of reasoning.
+3. **Drop to the protocol layer.** If the tool still reports an opaque remote error, issue the request directly with explicit parameters. A raw request converts a vague status into the service's actual contract.
+
+Record which layer each observation came from. A conclusion drawn at one layer does not transfer to another without retesting.
+
+## 13) Design controls that can actually falsify
+
+Most wasted investigation time comes from controls that could not have failed.
+
+- Before trusting a passing control, state the **dimension the failure depends on** (size, offset, duration, count, concurrency, auth state). A control that does not vary that dimension proves nothing.
+- Beware convenience flags that truncate work (sample, preview, limit, dry-run). They change the governing dimension and can turn a genuinely failing case green.
+- Any control must be known to **exceed the suspected threshold**. A control below it is indistinguishable from success.
+- When failure depends on a quantity, **bisect the boundary** rather than theorizing about cause. An exact threshold usually identifies the rule outright.
+- Re-run a previously passing case late in a long investigation to confirm the environment has not shifted underneath you.
+
+## 14) Remedy ordering: cheapest operational cost first
+
+Rank candidate fixes by the burden they impose on the user, and exhaust cheaper tiers first:
+
+1. Configuration within the tool already shipped — alternate client profile, mode, protocol, or parameter.
+2. Updating an existing dependency.
+3. A one-time local artifact the user can produce.
+4. New always-on infrastructure — background services, daemons, containers.
+
+Never propose tier 4 before demonstrating tiers 1–3 fail. A long-lived service is a heavy ask for a desktop feature; if you reach for one, state explicitly what was tried and ruled out. Re-examine tier 1 whenever a user rejects an operational burden — a configuration-level fix is often still unexplored.
+
+## 15) Costly capabilities are escalations, not defaults
+
+- A capability that is slow, environment-fragile, or frequently unavailable must be **triggered by evidence**, never applied to every operation.
+- A stored preference records **availability, not consent to always use**. It must not silently force a costly path on every future operation.
+- Honor an explicit in-session choice immediately, and keep it distinguishable from a preference merely loaded from storage.
+- Order fallbacks cheapest-and-most-likely-first. A ladder that ends with the option that usually works pays for every failed attempt before it.
+- Classify on distinctive signals only. Matching a generic status broadly routes unrelated failures into the wrong recovery path and reports a misleading cause to the user — which then becomes the thing they chase.
+
+## 16) Symptom → strategy map
 
 | Symptom | Likely bucket | First strategy |
 |---|---|---|
@@ -113,3 +158,9 @@ When plan review says proceed:
 | Tests pass; user distrusts fix | Validation gap | Live proof on real target; record counts + one download |
 | Long review, no code change | Review–implement gap | TDD + live proof in one session after proceed |
 | Titles misaligned after dedupe | Index coupling | Verify collapsed order; tier filename acceptance |
+| Bare third-party tool reproduces the failure | Not an integration defect | Stop editing app code; isolate at the protocol layer |
+| Small requests succeed, full ones fail | Service-side gating by threshold | Bisect the boundary; retry under an alternate client profile |
+| Remediation advice contradicts observed behavior | Bucket assigned from a generic status | Reclassify on a distinctive signal; suspect the classifier |
+| Every operation pays a slow fallback ladder | Costly capability used as a default | Make it evidence-triggered; reorder cheapest-first |
+| Fix requires a new background service | Premature infrastructure escalation | Exhaust tool-configuration tiers first |
+| Controls all pass but the bug persists | Control never varied the governing dimension | Re-run controls above the suspected threshold |

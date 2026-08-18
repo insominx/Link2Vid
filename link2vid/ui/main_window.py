@@ -21,8 +21,10 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from ..core.cookie_prefs import (
     cookies_browser_label,
     load_preferred_cookies_browser,
+    load_preferred_cookies_path,
     normalize_cookies_browser,
     store_preferred_cookies_browser,
+    store_preferred_cookies_path,
 )
 from ..core.dev_defaults import dev_credentials_for_url, dev_domain_for_url, resolve_login_plan
 from ..core import (
@@ -244,7 +246,7 @@ class VideoDownloaderApp:
         # Whisper workers cannot apply each other's app-global cookies path.
         self._whisper_cookie_retry_lock = threading.Lock()
         self.output_path = self.get_default_output_path()
-        self.cookies_path = None
+        self.cookies_path = load_preferred_cookies_path(dev_defaults=self.dev_defaults)
         self.ydl_logger = YtDlpLogger(self)
         self.download_manager = DownloadManager(
             ydl_logger=self.ydl_logger,
@@ -339,8 +341,10 @@ class VideoDownloaderApp:
             main_frame,
             output_path=self.output_path,
             cookies_browser=self.cookies_browser,
+            cookies_path=self.cookies_path,
             on_change_output=self.browse_folder,
             on_change_cookies_browser=self.set_cookies_browser,
+            on_change_cookies_path=self.browse_cookies,
             on_copy_diagnostics=self.copy_diagnostics,
         )
         self.footer.pack(fill="x", pady=(0, 8))
@@ -483,6 +487,12 @@ class VideoDownloaderApp:
 
     def set_cookies_browser(self, browser: str | None, *, persist: bool = True) -> None:
         self.cookies_browser = normalize_cookies_browser(browser)
+        # Picking a browser here is a deliberate act, so honour it on the very next
+        # attempt. The stored preference alone stays opt-in: on a fresh launch
+        # downloads start cookieless, which is what public videos actually need.
+        manager = getattr(self, "download_manager", None)
+        if manager is not None:
+            manager.force_browser_cookies = bool(self.cookies_browser)
         if persist:
             try:
                 store_preferred_cookies_browser(
@@ -1493,6 +1503,12 @@ class VideoDownloaderApp:
                                           filetypes=[('Text files', '*.txt'), ('All files', '*.*')])
         if path:
             self.cookies_path = path
+            store_preferred_cookies_path(path)
+            footer = getattr(self, "footer", None)
+            if footer is not None:
+                setter = getattr(footer, "set_cookies_path", None)
+                if setter:
+                    setter(path)
             self.log(f"Using cookies.txt: {path}")
 
     def update_card_buttons(self, has_folder: bool):

@@ -24,14 +24,17 @@ class FooterBar(ctk.CTkFrame):
         master,
         output_path: str = "",
         cookies_browser: str | None = None,
+        cookies_path: str | None = None,
         on_change_output: Callable[[], None] | None = None,
         on_change_cookies_browser: Callable[[str | None], None] | None = None,
+        on_change_cookies_path: Callable[[], None] | None = None,
         on_copy_diagnostics: Callable[[], None] | None = None,
         **kwargs,
     ) -> None:
         super().__init__(master, **kwargs)
 
         self._on_change_cookies_browser = on_change_cookies_browser or _noop
+        self._on_change_cookies_path = on_change_cookies_path or _noop
         self._label_to_browser = {label: value for label, value in cookies_browser_choices()}
         self.cookies_browser = normalize_cookies_browser(cookies_browser)
 
@@ -70,14 +73,22 @@ class FooterBar(ctk.CTkFrame):
         self.cookies_menu.grid(row=1, column=1, sticky="w", padx=(0, 6), pady=(0, 8))
         self.cookies_menu.set(cookies_browser_label(self.cookies_browser))
 
+        self.cookies_file_button = ctk.CTkButton(
+            self,
+            text="cookies.txt...",
+            width=110,
+            command=self._on_change_cookies_path,
+        )
+        self.cookies_file_button.grid(row=1, column=2, sticky="w", padx=(0, 12), pady=(0, 8))
+
         self.cookies_hint = ctk.CTkLabel(
             self,
-            text="Read cookies from this browser automatically",
+            text=self._cookies_hint_text(cookies_path),
             anchor="w",
             font=("Arial", 11),
             text_color="#94a3b8",
         )
-        self.cookies_hint.grid(row=1, column=2, sticky="w", padx=(0, 12), pady=(0, 8))
+        self.cookies_hint.grid(row=2, column=0, columnspan=3, sticky="w", padx=(12, 12), pady=(0, 8))
 
         self.diagnostics_button = ctk.CTkButton(
             self,
@@ -95,6 +106,15 @@ class FooterBar(ctk.CTkFrame):
         label = cookies_browser_label(self.cookies_browser)
         if self.cookies_menu.get() != label:
             self.cookies_menu.set(label)
+
+    def set_cookies_path(self, cookies_path: str | None) -> None:
+        self.cookies_hint.configure(text=self._cookies_hint_text(cookies_path))
+
+    @staticmethod
+    def _cookies_hint_text(cookies_path: str | None) -> str:
+        if cookies_path:
+            return f"Using cookies.txt: {cookies_path}"
+        return "Read cookies from this browser automatically, or use a cookies.txt export"
 
     def _on_cookies_browser_change(self, label: str) -> None:
         browser = self._label_to_browser.get(label)

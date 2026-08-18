@@ -15,6 +15,11 @@ import shutil
 from urllib.parse import urlparse
 import yt_dlp
 
+# YouTube limits unverified clients to roughly the first mebibyte of a format URL
+# and answers every later range with 403. These clients have been observed to
+# still serve whole files in that state; they are tried in order after a 403.
+YOUTUBE_PLAYER_CLIENT_FALLBACKS = ("web_embedded", "tv_embedded", "mweb")
+
 
 @dataclass
 class TranscriptDownloadResult:
@@ -50,6 +55,12 @@ class DownloadManager:
         )
         self.last_cookies_mode = "none"
         self.last_cookies_browser = None
+        # Set when the user picks a browser *in this session* (footer menu, or the
+        # prompt shown after a site demanded sign-in). A merely persisted
+        # preference must not force cookies onto every first attempt, but an
+        # explicit choice has to be honoured immediately.
+        self.force_browser_cookies = False
+        self.last_player_client = None
         self.last_js_runtime = None
         self.last_js_runtime_path = None
         self.last_remote_components = []
@@ -97,16 +108,31 @@ class DownloadManager:
         self.last_cookies_browser = None
 
     def _apply_cookies(self, opts: dict) -> None:
+        """Cookies for the *first* attempt.
+
+        An explicit cookies.txt is a deliberate user choice, so it is honoured up
+        front. Browser cookies are NOT: reading them is slow, fails whenever the
+        browser is running (locked DB), and on YouTube an authenticated session
+        without a matching PO token produces media URLs that 403 on public videos.
+        They are escalated to only when the error says authentication is needed.
+        """
         cookies_path = self.get_cookies_path()
         if cookies_path:
             opts["cookiefile"] = cookies_path
             self.last_cookies_mode = "cookies.txt"
             return
         browser = self._preferred_browser()
-        if browser:
+        if not browser:
+            return
+        if self.force_browser_cookies:
             opts["cookiesfrombrowser"] = (browser,)
             self._mark_browser_cookies(browser)
-            self.log(f"[yt-dlp] Using cookies from {browser}")
+            self.log(f"[yt-dlp] Using cookies from {browser} (chosen for this session)")
+            return
+        self.log(
+            f"[yt-dlp] Cookie source is {browser}; trying without cookies first "
+            "(browser cookies are used only if the site asks for sign-in)."
+        )
 
     def _mark_browser_cookies(self, browser: str) -> None:
         self.last_cookies_mode = "browser"
@@ -116,6 +142,11 @@ class DownloadManager:
         if self._is_cookie_access_error(err):
             return True
         message = str(err).lower()
+        # Only signals that genuinely mean "this content needs an authenticated
+        # session". A bare 403/Forbidden is deliberately NOT here: YouTube returns
+        # 403 on media stream URLs for throttling/PO-token reasons on public
+        # videos, and escalating those to cookies makes the failure worse while
+        # reporting a misleading "cookies/auth" cause.
         signals = (
             "account",
             "cookie",
@@ -123,21 +154,40 @@ class DownloadManager:
             "consent",
             "sign in",
             "signin",
+            "log in",
             "login",
+            "private video",
+            "members-only",
+            "members only",
             "age-restricted",
             "age restricted",
             "age verification",
-            "403",
-            "forbidden",
+            "confirm you're not a bot",
+            "confirm your age",
             "bot",
-            "verify",
-            "verification",
+            "captcha",
         )
         return any(token in message for token in signals)
 
     def _is_media_forbidden(self, err: Exception) -> bool:
         message = str(err).lower()
         return "403" in message or "forbidden" in message
+
+    def _is_youtube(self, url: str) -> bool:
+        host = (urlparse(url).netloc or "").lower()
+        return host.endswith("youtube.com") or host.endswith("youtu.be") or ".youtube." in host
+
+    def _with_player_client(self, opts: dict, client: str) -> dict:
+        """Copy opts with youtube:player_client forced to a single client."""
+        new_opts = dict(opts)
+        extractor_args = {
+            key: dict(value) for key, value in (opts.get("extractor_args") or {}).items()
+        }
+        youtube_args = dict(extractor_args.get("youtube") or {})
+        youtube_args["player_client"] = [client]
+        extractor_args["youtube"] = youtube_args
+        new_opts["extractor_args"] = extractor_args
+        return new_opts
 
     def _cookiesfrombrowser(self, opts: dict) -> str | None:
         value = opts.get("cookiesfrombrowser")
@@ -495,9 +545,37 @@ class DownloadManager:
                 self.log(f"[yt-dlp] Muxed audio extract failed: {self._format_exception(muxed_err)}")
                 return False
 
+        def retry_media_forbidden(err: Exception) -> bool:
+            """Retry a media-stream 403 against alternative YouTube player clients.
+
+            YouTube serves only the first ~1 MiB of a format URL to clients it
+            considers unverified, then answers every further range with 403. The
+            default client can hit this while an embedded client still serves the
+            whole file, so walk the alternatives before giving up. Resume is
+            disabled because a stale .part would range-request a newly signed URL.
+            """
+            if not self._is_media_forbidden(err) or not self._is_youtube(url):
+                return False
+            for client in YOUTUBE_PLAYER_CLIENT_FALLBACKS:
+                self.log(f"[yt-dlp] Media 403; retrying with YouTube player client '{client}'…")
+                retry_opts = self._with_player_client(opts, client)
+                retry_opts["continuedl"] = False
+                try:
+                    if download_with(retry_opts):
+                        self.last_player_client = client
+                        self.log(f"[yt-dlp] Player client '{client}' succeeded.")
+                        return True
+                except Exception as retry_err:
+                    self.log(
+                        f"[yt-dlp] Player client '{client}' failed: {self._format_exception(retry_err)}"
+                    )
+            return False
+
         try:
             return download_with(opts)
         except Exception as first_err:
+            if self._is_media_forbidden(first_err) and retry_media_forbidden(first_err):
+                return True
             if self._should_try_browser_cookies(url, first_err):
                 try:
                     return self._retry_with_browser_cookies(url, opts, first_err, download_with)
