@@ -8,6 +8,7 @@ from typing import Callable
 from .errors import CookiesRequiredError
 from .dev_defaults import dev_domain_for_url
 from .extractors import HlsScanResult, extract_embedded_page_videos, scan_direct_media_entries, scan_direct_m3u8
+from .udio import extract_udio_entries, is_udio_url
 
 LogFn = Callable[[str], None]
 GetVideoInfoFn = Callable[[str, str | None, str | None], list[dict]]
@@ -56,6 +57,20 @@ class VideoFetcher:
         self.dev_defaults = dev_defaults or {}
 
     def fetch(self, url: str, username: str | None = None, password: str | None = None) -> FetchOutcome:
+        if is_udio_url(url):
+            try:
+                udio_entries = extract_udio_entries(url, log=self.log)
+            except Exception as exc:
+                return FetchError(error=exc)
+            if udio_entries:
+                return FetchResults(entries=udio_entries)
+            return FetchError(
+                error=RuntimeError(
+                    "No public Udio audio found. Paste a public /songs/ URL. "
+                    "Udio sign-in uses an email link, which Link2Vid cannot automate."
+                )
+            )
+
         ytdlp_error: Exception | None = None
         try:
             entries = self.get_video_info(url, username, password)

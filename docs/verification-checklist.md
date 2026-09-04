@@ -10,6 +10,7 @@ Automated baseline: `python -m pytest tests/`
 2. **Age-restricted video** — choose the logged-in browser in the footer (and close it if needed); formats load, download completes.
 3. **Music video (common throttling)** — download completes; no persistent 403/429.
 4. **Playlist URL** — multiple cards appear; at least one item downloads.
+5. **Public Udio song** (`udio.com/songs/{id}`) — one card appears without a username/password prompt; **Best (A+V)** or **Audio (MP3)** saves the track. Creator/library pages should explain that a public song URL is required.
 
 ## Browser-cookie retry
 

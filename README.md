@@ -4,6 +4,7 @@ Link2Vid is a desktop application for downloading videos from various platforms 
 
 ## Features
 - Download videos from a wide range of sites supported by yt-dlp
+- Fetch public [Udio](https://www.udio.com) `/songs/` links without login (Udio email-link sign-in is not automated)
 - Modern, dark-themed GUI
 - Select and preview available video formats, including **Audio (MP3)** to save only the soundtrack
 - Choose download directory

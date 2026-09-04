@@ -6,7 +6,8 @@ How Link2Vid discovers multiple videos and chooses downloadable URLs. For overal
 
 Full chain is in [architecture.md](./architecture.md). Selenium-specific behavior:
 
-1. `VideoFetcher.fetch` tries yt-dlp, configured embedded-page scrape, HTTP direct scan, and HLS scan before returning `NeedsSelenium`.
+1. `VideoFetcher.fetch` tries the Udio public song API for `udio.com/songs/{id}`, then yt-dlp, configured embedded-page scrape, HTTP direct scan, and HLS scan before returning `NeedsSelenium`.
+   Udio sign-in is an email magic link, so those URLs never fall through to the username/password Selenium prompt. Creator/library pages are not fetched this way; paste a public song URL.
 2. **Unauthenticated HTTP path:** `scan_direct_media_entries` in `link2vid/core/extractors.py` returns direct media URLs from page HTML as card entries via `build_media_entries`.
 3. **Selenium path:** `selenium_fetch_media_entries` in `link2vid/core/selenium_fallback.py` logs in when needed, runs `discover_media_urls`, attaches titles/headers, returns entries for the card list.
 

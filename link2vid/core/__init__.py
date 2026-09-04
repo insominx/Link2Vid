@@ -10,6 +10,7 @@ from .diagnostics import (
 from .errors import CookiesRequiredError, NoTranscriptAvailableError
 from .error_classification import classify_error, get_error_guidance
 from .extractors import extract_embedded_page_videos, scan_direct_m3u8, scan_direct_media_entries, build_media_entries
+from .udio import extract_udio_entries, is_udio_url, udio_song_id_from_url
 from .fetcher import (
     DirectHlsFound,
     FetchError,
@@ -74,13 +75,16 @@ __all__ = [
     "download_with_ffmpeg",
     "entry_watch_url",
     "extract_embedded_page_videos",
+    "extract_udio_entries",
     "get_format_options",
+    "is_udio_url",
     "get_yt_dlp_version",
     "is_audio_extract_format",
     "normalize_url",
     "sanitize_filename",
     "unique_output_path",
     "url_from_clipboard_text",
+    "udio_song_id_from_url",
     "scan_direct_m3u8",
     "scan_direct_media_entries",
     "build_media_entries",
