@@ -37,6 +37,7 @@ from ..core import (
     FetchError,
     FetchResults,
     NeedsCookies,
+    NeedsLogin,
     NeedsSelenium,
     SourceKind,
     TranscriptionRequest,
@@ -571,8 +572,10 @@ class VideoDownloaderApp:
         if chosen:
             self.set_cookies_browser(chosen)
 
-    def ui_prompt_for_credentials(self, url: str):
-        return self.run_on_ui_thread(lambda: self.prompt_for_credentials(url))
+    def ui_prompt_for_credentials(self, url: str, *, browser_automation: bool = True):
+        return self.run_on_ui_thread(
+            lambda: self.prompt_for_credentials(url, browser_automation=browser_automation)
+        )
 
     def process_ui_queue(self):
         try:
@@ -1105,6 +1108,12 @@ class VideoDownloaderApp:
             return
 
         self.is_fetching = True
+        self.last_action_kind = None
+        self.last_selected_format = None
+        self.last_selected_label = None
+        self.last_selected_title = None
+        self.last_transcript_source = None
+        self.last_transcript_languages = []
         self.clear_results()
         self.set_results_state("Fetching...")
         self.update_button_states()
@@ -1129,6 +1138,15 @@ class VideoDownloaderApp:
                     self.log("Browser cookie retry did not resolve the fetch error.")
                     self.ui_queue.put(("results", []))
                     return
+
+            if isinstance(outcome, NeedsLogin):
+                self.log(str(outcome.error))
+                username, password = self.ui_prompt_for_credentials(url, browser_automation=False)
+                if not username or not password:
+                    self.log("No credentials provided.")
+                    self.ui_queue.put(("results", []))
+                    return
+                outcome = self.fetcher.fetch(url, username, password)
 
             if isinstance(outcome, FetchResults):
                 if outcome.error:
@@ -2833,14 +2851,14 @@ class VideoDownloaderApp:
     # ──────────────────────────────────────────────────────────
     # Auth helpers / Selenium fallback
     # ──────────────────────────────────────────────────────────
-    def prompt_for_credentials(self, url: str):
+    def prompt_for_credentials(self, url: str, *, browser_automation: bool = True):
         username, password = dev_credentials_for_url(url, self.dev_defaults)
         if username and password:
             domain = dev_domain_for_url(url, self.dev_defaults)
             self.log(f"[dev] Using developer.json credentials for {domain}.")
             return username, password
 
-        return prompt_credentials(self.root, url)
+        return prompt_credentials(self.root, url, browser_automation=browser_automation)
 
     def selenium_fallback(self, page_url, username=None, password=None):
         if not username or not password:

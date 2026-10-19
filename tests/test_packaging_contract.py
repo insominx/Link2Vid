@@ -26,6 +26,7 @@ REQUIRED_HIDDENIMPORTS = {
 REQUIRED_COLLECT_ALL = {
     "yt_dlp",
     "customtkinter",
+    "selenium",
 }
 
 
@@ -36,8 +37,11 @@ class TestPackagingContract(unittest.TestCase):
     def test_spec_collect_all_targets(self):
         text = SPEC_PATH.read_text(encoding="utf-8")
         self.assertIn("collect_all(", text)
+        loop = re.search(r"for pkg in \(([^)]*)\):\s*\n\s*pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all\(pkg\)", text)
+        self.assertIsNotNone(loop, "spec must collect_all packages in a `for pkg in (...)` loop")
+        collected = set(ast.literal_eval(f"({loop.group(1)})"))
         for pkg in REQUIRED_COLLECT_ALL:
-            self.assertIn(pkg, text, f"spec must collect_all package {pkg}")
+            self.assertIn(pkg, collected, f"spec must collect_all package {pkg}")
 
     def test_spec_hiddenimports(self):
         text = SPEC_PATH.read_text(encoding="utf-8")

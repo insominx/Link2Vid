@@ -17,6 +17,7 @@ from .fetcher import (
     FetchOutcome,
     FetchResults,
     NeedsCookies,
+    NeedsLogin,
     NeedsSelenium,
     VideoFetcher,
 )
@@ -96,6 +97,7 @@ __all__ = [
     "FetchOutcome",
     "FetchResults",
     "NeedsCookies",
+    "NeedsLogin",
     "NeedsSelenium",
     "VideoFetcher",
     "VerifiedMedia",

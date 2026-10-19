@@ -5,9 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+import requests
+
 from .errors import CookiesRequiredError
 from .dev_defaults import dev_domain_for_url
 from .extractors import HlsScanResult, extract_embedded_page_videos, scan_direct_media_entries, scan_direct_m3u8
+from .gdcvault import GdcVaultLoginError, GdcVaultLoginRequired, extract_gdcvault_entries, is_gdcvault_url
 from .udio import extract_udio_entries, is_udio_url
 
 LogFn = Callable[[str], None]
@@ -37,11 +40,18 @@ class NeedsCookies:
 
 
 @dataclass
+class NeedsLogin:
+    """Site login is plain HTTP; retry fetch() with credentials instead of Selenium."""
+
+    error: Exception
+
+
+@dataclass
 class FetchError:
     error: Exception
 
 
-FetchOutcome = FetchResults | DirectHlsFound | NeedsSelenium | NeedsCookies | FetchError
+FetchOutcome = FetchResults | DirectHlsFound | NeedsSelenium | NeedsCookies | NeedsLogin | FetchError
 
 
 class VideoFetcher:
@@ -70,6 +80,9 @@ class VideoFetcher:
                     "Udio sign-in uses an email link, which Link2Vid cannot automate."
                 )
             )
+
+        if is_gdcvault_url(url):
+            return self._fetch_gdcvault(url, username, password)
 
         ytdlp_error: Exception | None = None
         try:
@@ -105,6 +118,22 @@ class VideoFetcher:
             return NeedsSelenium(error=ytdlp_error)
 
         return FetchError(error=RuntimeError("Fetch failed without details"))
+
+    def _fetch_gdcvault(self, url: str, username: str | None, password: str | None) -> FetchOutcome:
+        try:
+            entries = extract_gdcvault_entries(url, username, password, log=self.log)
+        except GdcVaultLoginRequired as exc:
+            return NeedsLogin(error=exc)
+        except (GdcVaultLoginError, requests.RequestException) as exc:
+            return FetchError(error=exc)
+        if entries:
+            return FetchResults(entries=entries)
+
+        self.log("[GDC Vault] No Blazestreaming player on this page; trying yt-dlp for older talk players.")
+        try:
+            return FetchResults(entries=self.get_video_info(url, username, password))
+        except Exception as exc:
+            return FetchError(error=RuntimeError(f"No playable GDC Vault video found on this page ({exc})."))
 
     def _is_no_video_error(self, exc: Exception) -> bool:
         message = str(exc).lower()

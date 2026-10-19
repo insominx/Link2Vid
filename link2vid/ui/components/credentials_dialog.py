@@ -22,7 +22,12 @@ def _center_toplevel(top: ctk.CTkToplevel, parent: ctk.CTk, width: int, height: 
     top.geometry(f"{width}x{height}+{x}+{y}")
 
 
-def prompt_credentials(parent: ctk.CTk, url: str | None = None) -> tuple[str | None, str | None]:
+def prompt_credentials(
+    parent: ctk.CTk,
+    url: str | None = None,
+    *,
+    browser_automation: bool = True,
+) -> tuple[str | None, str | None]:
     """Show a modal login dialog. Must run on the Tk main thread."""
     result: dict[str, str | None] = {"username": None, "password": None}
 
@@ -39,10 +44,15 @@ def prompt_credentials(parent: ctk.CTk, url: str | None = None) -> tuple[str | N
     container.grid_columnconfigure(0, weight=1)
 
     site = _site_label(url)
-    if site:
-        heading = f"Sign in to continue browser automation for {site}"
+    if browser_automation:
+        heading = f"Sign in to continue browser automation for {site}" if site else "Sign in to continue browser automation"
+        detail = "Link2Vid will open the site in Chrome, log in with these credentials, then search for playable media."
     else:
-        heading = "Sign in to continue browser automation"
+        heading = f"Sign in to {site}" if site else "Sign in"
+        detail = (
+            "Link2Vid will sign in directly (no browser window), load the video, "
+            "then sign out. Credentials are not saved."
+        )
     ctk.CTkLabel(
         container,
         text=heading,
@@ -54,8 +64,7 @@ def prompt_credentials(parent: ctk.CTk, url: str | None = None) -> tuple[str | N
 
     ctk.CTkLabel(
         container,
-        text="Link2Vid will open the site in Chrome, log in with these credentials, "
-        "then search for playable media.",
+        text=detail,
         anchor="w",
         justify="left",
         wraplength=460,

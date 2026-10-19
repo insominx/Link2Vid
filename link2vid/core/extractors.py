@@ -40,6 +40,15 @@ OG_TITLE_ALT_RE = re.compile(
     r'<meta[^>]+content="([^"]*)"[^>]+property=["\']og:title["\']',
     re.I,
 )
+BLAZESTREAMING_IFRAME_RE = re.compile(r"<iframe[^>]+src=[\"']([^\"']+blazestreaming[^\"']+)[\"']", re.I)
+BLAZESTREAMING_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+BLAZESTREAMING_PLAYBACK_URL_RE = re.compile(
+    r"^https://cdn-a\.blazestreaming\.com/out/v1/[0-9a-f]{32}/[0-9a-f]{32}/[0-9a-f]{32}/index\.m3u8$"
+)
+BLAZESTREAMING_LEGACY_PLAYBACK_URL = (
+    "https://cdn-a.blazestreaming.com/out/v1/{video_id}"
+    "/38549d9a185b445888c6fbc2e2e792e9/50413c5b8a95441e919f0a1579606e47/index.m3u8"
+)
 SITE_TITLE_SUFFIXES = (
     " | AI Advantage Club",
     " - AI Advantage Club",
@@ -191,6 +200,38 @@ class HlsScanResult:
     variants: list[HlsVariant]
 
 
+def resolve_blazestreaming_playback_url(
+    sess: requests.Session,
+    page_url: str,
+    html: str,
+    headers: dict[str, str],
+    log: LogFn | None = None,
+) -> str | None:
+    """Mirror the GDC Vault Blazestreaming player: aliases.json override, else the id-derived URL."""
+    logger = log or (lambda _msg: None)
+    iframe = BLAZESTREAMING_IFRAME_RE.search(html)
+    if not iframe:
+        return None
+    iframe_url = urllib.parse.urljoin(page_url, iframe.group(1))
+    video_id = urllib.parse.parse_qs(urllib.parse.urlparse(iframe_url).query).get("id", [""])[0].lower()
+    if not BLAZESTREAMING_ID_RE.match(video_id):
+        logger(f"[Blazestreaming] Player iframe has no usable video id: {iframe_url}")
+        return None
+
+    playback_url = BLAZESTREAMING_LEGACY_PLAYBACK_URL.format(video_id=video_id)
+    try:
+        response = sess.get(urllib.parse.urljoin(iframe_url, "aliases.json"), headers=headers, timeout=15)
+        if response.status_code == 200:
+            entry = (response.json().get("aliases") or {}).get(video_id)
+            alias_url = entry.get("playbackUrl") if isinstance(entry, dict) else None
+            if isinstance(alias_url, str) and BLAZESTREAMING_PLAYBACK_URL_RE.match(alias_url):
+                playback_url = alias_url
+    except (requests.RequestException, ValueError, AttributeError) as exc:
+        logger(f"[Blazestreaming] Alias lookup failed; using default playback URL ({exc}).")
+    logger(f"[Blazestreaming] Resolved player {video_id} to {playback_url}")
+    return playback_url
+
+
 def scan_direct_m3u8(page_url: str, log: LogFn | None = None) -> HlsScanResult | None:
     logger = log or (lambda _msg: None)
     logger("[HLS] Scanning page for .m3u8 …")
@@ -202,27 +243,9 @@ def scan_direct_m3u8(page_url: str, log: LogFn | None = None) -> HlsScanResult |
         }
         html = sess.get(page_url, headers=headers, timeout=15).text
 
-        iframe = re.search(r"<iframe[^>]+src=[\"']([^\"']+blazestreaming[^\"']+)[\"']", html, re.I)
-        if iframe:
-            iframe_url = urllib.parse.urljoin(page_url, iframe.group(1))
-            html = sess.get(iframe_url, headers=headers, timeout=15).text
-            
-            parsed_url = urllib.parse.urlparse(iframe_url)
-            qs = urllib.parse.parse_qs(parsed_url.query)
-            video_id = qs.get("id", [""])[0]
-
-            script_matches = re.findall(r"<script[^>]+src=[\"']([^\"']+\.js)[\"']", html, re.I)
-            for script_src in script_matches:
-                try:
-                    script_url = urllib.parse.urljoin(iframe_url, script_src)
-                    script_js = sess.get(script_url, headers=headers, timeout=15).text
-                    html += "\n" + script_js
-                except Exception:
-                    pass
-
-            if video_id:
-                html = re.sub(r"'\s*\+\s*videoId\s*\+\s*'", video_id, html)
-                html = re.sub(r"\"\s*\+\s*videoId\s*\+\s*\"", video_id, html)
+        blaze_url = resolve_blazestreaming_playback_url(sess, page_url, html, headers, logger)
+        if blaze_url:
+            html = blaze_url
 
         playlist_urls = _dedupe_preserve_order(M3U8_URL_RE.findall(html))
         if not playlist_urls:
@@ -267,33 +290,15 @@ def scan_direct_media_entries(page_url: str, log: LogFn | None = None) -> list[d
         }
         html = sess.get(page_url, headers=headers, timeout=15).text
 
-        iframe = re.search(r"<iframe[^>]+src=[\"']([^\"']+blazestreaming[^\"']+)[\"']", html, re.I)
-        if iframe:
-            iframe_url = urllib.parse.urljoin(page_url, iframe.group(1))
-            html = sess.get(iframe_url, headers=headers, timeout=15).text
-
-            parsed_url = urllib.parse.urlparse(iframe_url)
-            qs = urllib.parse.parse_qs(parsed_url.query)
-            video_id = qs.get("id", [""])[0]
-
-            script_matches = re.findall(r"<script[^>]+src=[\"']([^\"']+\.js)[\"']", html, re.I)
-            for script_src in script_matches:
-                try:
-                    script_url = urllib.parse.urljoin(iframe_url, script_src)
-                    script_js = sess.get(script_url, headers=headers, timeout=15).text
-                    html += "\n" + script_js
-                except Exception:
-                    pass
-
-            if video_id:
-                html = re.sub(r"'\s*\+\s*videoId\s*\+\s*'", video_id, html)
-                html = re.sub(r"\"\s*\+\s*videoId\s*\+\s*\"", video_id, html)
-
-        candidates: list[str] = []
-        candidates.extend(M3U8_URL_RE.findall(html))
-        candidates.extend(MUX_URL_RE.findall(html))
-        candidates.extend(MP4_URL_RE.findall(html))
-        media_urls = _dedupe_preserve_order(candidates)
+        blaze_url = resolve_blazestreaming_playback_url(sess, page_url, html, headers, logger)
+        if blaze_url:
+            media_urls = [blaze_url]
+        else:
+            candidates: list[str] = []
+            candidates.extend(M3U8_URL_RE.findall(html))
+            candidates.extend(MUX_URL_RE.findall(html))
+            candidates.extend(MP4_URL_RE.findall(html))
+            media_urls = _dedupe_preserve_order(candidates)
         if not media_urls:
             logger("[Media] No direct media URLs found.")
             return []

@@ -29,6 +29,7 @@ Windows portable builds: `build_windows.bat` → `release/Link2Vid/`; launch via
 | `link2vid/core/whisper_transcription.py` | Faster Whisper contracts, model validation/cache, serialized CUDA-or-CPU transcription, paired text/SRT output |
 | `link2vid/core/extractors.py` | Embedded-page scrape, HTTP direct media scan, HLS detection, `build_media_entries` |
 | `link2vid/core/udio.py` | Public Udio `/songs/{id}` metadata → direct MP3 entries (no login) |
+| `link2vid/core/gdcvault.py` | GDC Vault talks → Blazestreaming HLS entry; HTTP login only for members-only pages |
 | `link2vid/core/selenium_fallback.py` | Browser login, `discover_media_urls`, `collapse_selenium_media_candidates`, `selenium_fetch_media_entries` |
 | `link2vid/core/helpers.py` | URL normalization, filename sanitization, FFmpeg helper, format options |
 | `link2vid/core/diagnostics.py` | `build_diagnostics` for Copy Diagnostics |
@@ -42,6 +43,9 @@ User URL
   → normalize_url
   → VideoFetcher.fetch (background thread)
        1. Udio public song API (udio.com `/songs/{id}` only; never Selenium)
+       1b. GDC Vault (gdcvault.com; never Selenium): resolve the Blazestreaming
+           player; members-only pages → NeedsLogin → UI prompts → HTTP form login,
+           re-resolve, logout. No player → yt-dlp with credentials (older talks).
        2. yt-dlp extract_info
        3. configured embedded-page OpenGraph/JSON scrape
        4. scan_direct_media_entries (HTTP HTML)

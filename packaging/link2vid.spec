@@ -17,7 +17,9 @@ datas = []
 binaries = []
 hiddenimports = []
 
-for pkg in ("yt_dlp", "customtkinter"):
+# Selenium loads webdriver submodules lazily and launches Chrome through its
+# bundled selenium-manager binary; static analysis finds neither.
+for pkg in ("yt_dlp", "customtkinter", "selenium"):
     pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries
