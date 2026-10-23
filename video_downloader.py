@@ -40,7 +40,7 @@ def _run_smoke():
 
     from doggybag.ui import WEB_ROOT
 
-    for asset in ("index.html", "styles.css", "js/main.js", "vendor/preact-htm.module.js"):
+    for asset in ("index.html", "styles.css", "js/main.js", "vendor/preact-htm.module.js", "assets/mark.png", "assets/dog.png"):
         if not (WEB_ROOT / asset).is_file():
             print(f"[ERROR] Smoke check failed: missing UI asset {WEB_ROOT / asset}", file=sys.stderr)
             raise SystemExit(1)

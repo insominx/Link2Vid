@@ -18,7 +18,8 @@ How the Doggybag window is built, how it talks to Python, and how to iterate on 
 | `web/js/card.js` | Result card, format menu, Transcript panel (captions + Whisper), skeletons |
 | `web/js/dialogs.js` | Modal dialogs requested by Python, toast stack |
 | `web/js/popover.js` | App-level popover layer (cards clip overflow, so menus render here) |
-| `web/js/icons.js` | Inline stroke icons and the brand mark |
+| `web/js/icons.js` | Inline stroke icons, the brand tile, and the start-screen pup |
+| `web/assets/` | `mark.png` (app tile, also the `.ico` source) and `dog.png` (full origami pup, transparent) |
 | `web/js/mock.js` | Browser-only fake backend for UI work |
 
 ## Python ↔ page protocol

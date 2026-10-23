@@ -259,6 +259,7 @@ svg.icon {
   flex: none;
   border-radius: 27%;
   box-shadow: 0 4px 14px -2px rgba(123, 108, 255, 0.45);
+  user-select: none;
 }
 
 .shell[data-mode="home"] .header-row {
@@ -274,7 +275,7 @@ svg.icon {
   flex-direction: column;
   align-items: center;
   text-align: center;
-  max-height: 260px;
+  max-height: 380px;
   opacity: 1;
   overflow: hidden;
   transition: max-height 420ms var(--ease-out), opacity 260ms var(--ease), margin 420ms var(--ease-out);
@@ -288,12 +289,12 @@ svg.icon {
   pointer-events: none;
 }
 
-.hero .brand-mark {
-  width: 56px;
-  height: 56px;
-  margin-bottom: 22px;
-  box-shadow: 0 12px 32px -6px rgba(123, 108, 255, 0.6);
-  animation: float-in 700ms var(--ease-out) both;
+.hero-dog {
+  width: 220px;
+  height: auto;
+  margin-bottom: 18px;
+  filter: drop-shadow(0 14px 22px rgba(0, 0, 0, 0.28));
+  animation: trot-in 900ms var(--ease-out) both;
 }
 
 .hero h1 {
@@ -1888,6 +1889,13 @@ button.sb-item:hover {
   }
   100% {
     left: 100%;
+  }
+}
+
+@keyframes trot-in {
+  from {
+    opacity: 0;
+    transform: translateX(-28px) rotate(-2deg);
   }
 }
 

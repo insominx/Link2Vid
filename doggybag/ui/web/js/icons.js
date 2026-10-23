@@ -45,19 +45,10 @@ export function Icon({ name, class: className = "", size }) {
 }
 
 export function BrandMark({ class: className = "brand-mark" }) {
-  return html`<svg class=${className} viewBox="0 0 48 48" aria-hidden="true">
-    <defs>
-      <linearGradient id="dbg-g" x1="6" y1="4" x2="42" y2="44" gradientUnits="userSpaceOnUse">
-        <stop offset="0" stop-color="#9d8cff" />
-        <stop offset="0.55" stop-color="#7b6cff" />
-        <stop offset="1" stop-color="#d16bff" />
-      </linearGradient>
-    </defs>
-    <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#dbg-g)" />
-    <!-- Takeout box: wire handle, folded lid, body, play button. -->
-    <path d="M16.6 15.4C16.6 10.4 31.4 10.4 31.4 15.4" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" opacity="0.9" />
-    <path d="M14 18.5 16.4 14h15.2l2.4 4.5" fill="#e9e5ff" />
-    <path d="M12.6 18.5h22.8l-1.9 18.4a3 3 0 0 1-3 2.7H17.5a3 3 0 0 1-3-2.7z" fill="#fff" />
-    <path d="M21.3 24.6c0-1 1.1-1.6 1.9-1.1l6.5 4.1c.8.5.8 1.7 0 2.2l-6.5 4.1c-.8.5-1.9-.1-1.9-1.1z" fill="url(#dbg-g)" />
-  </svg>`;
+  return html`<img class=${className} src="assets/mark.png" alt="" draggable="false" />`;
+}
+
+// The full origami pup carrying its doggy bag, for roomy spots like the start screen.
+export function HeroDog() {
+  return html`<img class="hero-dog" src="assets/dog.png" alt="" draggable="false" />`;
 }

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/logo.png" width="96" height="96" alt="Doggybag logo">
+  <img src="docs/images/logo.png" width="240" alt="Doggybag: an origami pup carrying a takeout bag">
 </p>
 
 <h1 align="center">Doggybag</h1>

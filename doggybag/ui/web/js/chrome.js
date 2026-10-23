@@ -1,7 +1,7 @@
 // App chrome: omnibox header, results header + batch controls, status bar, activity drawer.
 import { html, useEffect, useLayoutEffect, useRef, useState } from "../vendor/preact-htm.module.js";
 import { call } from "./bridge.js";
-import { BrandMark, Icon } from "./icons.js";
+import { BrandMark, HeroDog, Icon } from "./icons.js";
 import { closePopover, openPopover } from "./popover.js";
 import { setDrawer, state, update, useStore } from "./store.js";
 
@@ -75,7 +75,7 @@ export function Header({ mode }) {
 
   return html`<header class="header">
     <div class="hero">
-      <${BrandMark} />
+      <${HeroDog} />
       <h1>Paste a link. Take it home.</h1>
       <p>Save video, MP3 audio, captions, or a local Whisper transcript from YouTube and over a thousand other sites.</p>
     </div>
