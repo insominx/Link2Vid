@@ -23,10 +23,10 @@ for /f "usebackq delims=" %%F in (`"%PYTHON%" -c "import pathlib, sys; print(pat
 if defined PYTHONW if not exist "%PYTHONW%" set "PYTHONW="
 
 echo [Link2Vid] Checking application...
-"%PYTHON%" -c "from link2vid.ui.main_window import VideoDownloaderApp" 2>nul
+"%PYTHON%" -c "from link2vid.ui.webview_app import run" 2>nul
 if errorlevel 1 (
   echo [ERROR] Link2Vid failed to load. Details:
-  "%PYTHON%" -c "from link2vid.ui.main_window import VideoDownloaderApp"
+  "%PYTHON%" -c "from link2vid.ui.webview_app import run"
   echo.
   echo Try running setup_link2vid.bat, then launch again.
   pause

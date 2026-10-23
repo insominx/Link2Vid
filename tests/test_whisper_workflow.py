@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 import uuid
+from concurrent.futures import Future
 from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
@@ -25,7 +26,7 @@ from link2vid.core.whisper_transcription import (
     WhisperRunSnapshot,
     WhisperService,
 )
-from link2vid.ui.main_window import VideoDownloaderApp
+from link2vid.app.controller import AppController
 
 
 class _FakeCard:
@@ -38,7 +39,7 @@ class _FakeCard:
         self.progress_mode = "determinate"
         self.actions_enabled = None
 
-    def winfo_exists(self) -> bool:
+    def is_alive(self) -> bool:
         return self._exists
 
     def destroy(self) -> None:
@@ -109,12 +110,12 @@ def _snapshot(
 
 
 class _AppHarness(unittest.TestCase):
-    """Minimal VideoDownloaderApp stand-in for queue/association tests."""
+    """Minimal AppController stand-in for queue/association tests."""
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.out_dir = Path(self.tmp.name)
-        self.app = object.__new__(VideoDownloaderApp)
+        self.app = object.__new__(AppController)
         self.app.main_thread_id = threading.get_ident()
         self.app.ui_queue = queue.Queue()
         self.app.card_entries = {}
@@ -141,8 +142,7 @@ class _AppHarness(unittest.TestCase):
         self.app.log_history = []
         self.app.last_error_reason = None
         self.app.format_label_map = {"best": "Best (single file)"}
-        self.app.progress = mock.Mock()
-        self.app.progress_bar = mock.Mock()
+        self.app.view = mock.Mock()
         self.app.download_manager = mock.Mock()
         self.app.download_manager.last_cookies_mode = "none"
         self.app.download_manager.last_cookies_browser = None
@@ -213,7 +213,7 @@ class _AppHarness(unittest.TestCase):
             "run_on_ui_thread",
             "process_ui_queue",
         ):
-            setattr(self.app, name, getattr(VideoDownloaderApp, name).__get__(self.app))
+            setattr(self.app, name, getattr(AppController, name).__get__(self.app))
 
         # log() on main thread needs _append_log / debug path stubs.
         self.app._append_log = lambda message: self.app.log_history.append(message)
@@ -241,9 +241,8 @@ class _AppHarness(unittest.TestCase):
         self.app.ffmpeg_path = None
         self.app.js_runtimes = []
         self.app.clipboard_text = None
-        self.app.root.clipboard_clear = mock.Mock()
-        self.app.root.clipboard_append = mock.Mock(
-            side_effect=lambda text: setattr(self.app, "clipboard_text", text)
+        self.app.view.set_clipboard = mock.Mock(
+            side_effect=lambda text: setattr(self.app, "clipboard_text", text) or True
         )
         # log_error appends to history like production for failure assertions.
         def _log_error(stage, err):
@@ -269,6 +268,26 @@ class _AppHarness(unittest.TestCase):
         # process_ui_queue reschedules itself; stub after and run one drain pass.
         self.app.root.after = mock.Mock()
         self.app.process_ui_queue()
+
+    def _progress_emit_count(self) -> int:
+        return sum(
+            1
+            for call in self.app.view.emit.call_args_list
+            if call.args and call.args[0] == "progress"
+        )
+
+    def _answer_later(self, answer) -> Future:
+        """Mimic the frontend: the dialog is answered on a later dispatcher pump."""
+        future: Future = Future()
+
+        def resolve():
+            try:
+                future.set_result(answer())
+            except Exception as exc:  # pragma: no cover - surfaced by the test
+                future.set_exception(exc)
+
+        self.app.ui_queue.put(("call", resolve))
+        return future
 
     def _register_card(self, card: _FakeCard | None = None) -> _FakeCard:
         card = card or _FakeCard()
@@ -399,8 +418,8 @@ class TestVerifiedMediaAssociation(_AppHarness):
         def fake_ffmpeg(media_url, output_file, headers, progress_hook=None, duration_seconds=None, **_kwargs):
             Path(output_file).write_bytes(b"hls-bytes")
 
-        with mock.patch("link2vid.ui.main_window.download_with_ffmpeg", side_effect=fake_ffmpeg):
-            with mock.patch("link2vid.ui.main_window.unique_output_path", return_value=str(outfile)):
+        with mock.patch("link2vid.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
+            with mock.patch("link2vid.app.controller.unique_output_path", return_value=str(outfile)):
                 with mock.patch("threading.Thread") as thread_cls:
                     started = []
 
@@ -435,7 +454,7 @@ class TestVerifiedMediaAssociation(_AppHarness):
             seen["audio_only"] = kwargs.get("audio_only")
             Path(output_file).write_bytes(b"mp3-bytes")
 
-        with mock.patch("link2vid.ui.main_window.download_with_ffmpeg", side_effect=fake_ffmpeg):
+        with mock.patch("link2vid.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
             with mock.patch("threading.Thread") as thread_cls:
                 def capture_thread(target=None, daemon=None):
                     return mock.Mock(start=lambda: target())
@@ -466,8 +485,8 @@ class TestVerifiedMediaAssociation(_AppHarness):
         def fake_ffmpeg(media_url, output_file, headers, progress_hook=None, duration_seconds=None, **_kwargs):
             return None
 
-        with mock.patch("link2vid.ui.main_window.download_with_ffmpeg", side_effect=fake_ffmpeg):
-            with mock.patch("link2vid.ui.main_window.unique_output_path", return_value=str(outfile)):
+        with mock.patch("link2vid.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
+            with mock.patch("link2vid.app.controller.unique_output_path", return_value=str(outfile)):
                 with mock.patch("threading.Thread") as thread_cls:
                     def run_inline(target=None, daemon=None):
                         return mock.Mock(start=lambda: target())
@@ -511,7 +530,7 @@ class TestVerifiedMediaAssociation(_AppHarness):
         self.assertEqual(self.app.verified_media_by_card, {})
         self.assertEqual(self.app._verified_media_epoch_by_card, {})
         self.assertEqual(self.app.card_entries, {})
-        self.assertFalse(card.winfo_exists())
+        self.assertFalse(card.is_alive())
 
     def test_prior_association_invalidated_before_new_media_action(self) -> None:
         card = self._register_card()
@@ -660,62 +679,38 @@ class TestPhase2CSeam(_AppHarness):
 
 class TestPhase2C1OwnershipAndProbe(_AppHarness):
     def test_constructor_accepts_injectable_service_and_resolver(self) -> None:
-        sig = inspect.signature(VideoDownloaderApp.__init__)
+        sig = inspect.signature(AppController.__init__)
         params = sig.parameters
         self.assertIn("whisper_service", params)
         self.assertIn("audio_source_resolver", params)
         self.assertEqual(params["whisper_service"].default, None)
         self.assertEqual(params["audio_source_resolver"].default, None)
-        # Positional root remains the only required arg for existing callers.
-        self.assertEqual(params["root"].kind, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        # The view is the only positional argument and defaults to a headless view.
+        self.assertEqual(params["view"].kind, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        self.assertEqual(params["view"].default, None)
 
     def test_constructor_owns_supplied_instances_without_display(self) -> None:
-        root = mock.MagicMock()
+        view = mock.MagicMock()
+        view.get_clipboard.return_value = None
         service = mock.Mock(spec=WhisperService)
         service.list_available_models.return_value = ["tiny", "small"]
         resolver = mock.Mock(spec=AudioSourceResolver)
-        widget_factory = mock.Mock(side_effect=lambda *args, **kwargs: mock.MagicMock())
         executor = mock.Mock()
 
         with ExitStack() as stack:
-            for widget_name in (
-                "CTkFrame",
-                "CTkLabel",
-                "CTkEntry",
-                "CTkButton",
-                "CTkScrollableFrame",
-                "CTkProgressBar",
-                "DoubleVar",
-            ):
-                stack.enter_context(
-                    mock.patch(
-                        f"link2vid.ui.main_window.ctk.{widget_name}",
-                        widget_factory,
-                    )
-                )
-            stack.enter_context(
-                mock.patch("link2vid.ui.main_window.FooterBar", widget_factory)
-            )
-            stack.enter_context(
-                mock.patch("link2vid.ui.main_window.BatchBar", widget_factory)
-            )
-            stack.enter_context(
-                mock.patch("link2vid.ui.main_window.LogDrawer", widget_factory)
-            )
             stack.enter_context(
                 mock.patch(
-                    "link2vid.ui.main_window.ThreadPoolExecutor",
+                    "link2vid.app.controller.ThreadPoolExecutor",
                     return_value=executor,
                 )
             )
-            stack.enter_context(mock.patch("link2vid.ui.main_window.DownloadManager"))
-            stack.enter_context(mock.patch("link2vid.ui.main_window.VideoFetcher"))
-            stack.enter_context(mock.patch("link2vid.ui.main_window.ThumbnailLoader"))
+            stack.enter_context(mock.patch("link2vid.app.controller.DownloadManager"))
+            stack.enter_context(mock.patch("link2vid.app.controller.VideoFetcher"))
             stack.enter_context(
-                mock.patch("link2vid.ui.main_window.get_format_options", return_value=[])
+                mock.patch("link2vid.app.controller.get_format_options", return_value=[])
             )
             stack.enter_context(
-                mock.patch("link2vid.ui.main_window.get_yt_dlp_version", return_value="test")
+                mock.patch("link2vid.app.controller.get_yt_dlp_version", return_value="test")
             )
             stack.enter_context(
                 mock.patch(
@@ -724,44 +719,32 @@ class TestPhase2C1OwnershipAndProbe(_AppHarness):
                 )
             )
             stack.enter_context(
-                mock.patch.object(
-                    VideoDownloaderApp,
-                    "load_dev_defaults",
-                    return_value={},
-                )
+                mock.patch.object(AppController, "load_dev_defaults", return_value={})
             )
             stack.enter_context(
                 mock.patch.object(
-                    VideoDownloaderApp,
+                    AppController,
                     "get_default_output_path",
                     return_value=str(self.out_dir),
                 )
             )
             stack.enter_context(
                 mock.patch.object(
-                    VideoDownloaderApp,
+                    AppController,
                     "_default_debug_log_path",
                     return_value=str(self.out_dir / "debug.log"),
                 )
             )
-            stack.enter_context(
-                mock.patch.object(
-                    VideoDownloaderApp,
-                    "_populate_url_from_clipboard_if_valid",
-                )
-            )
-            stack.enter_context(
-                mock.patch.object(VideoDownloaderApp, "update_button_states")
-            )
-            stack.enter_context(mock.patch.object(VideoDownloaderApp, "check_ffmpeg"))
-            stack.enter_context(mock.patch.object(VideoDownloaderApp, "check_js_runtime"))
+            stack.enter_context(mock.patch.object(AppController, "check_ffmpeg"))
+            stack.enter_context(mock.patch.object(AppController, "check_js_runtime"))
 
-            app = VideoDownloaderApp(
-                root,
+            app = AppController(
+                view,
                 whisper_service=service,
                 audio_source_resolver=resolver,
             )
 
+        self.assertIs(app.view, view)
         self.assertIs(app.whisper_service, service)
         self.assertIs(app.audio_source_resolver, resolver)
         self.assertEqual(app.whisper_models, ["tiny", "small"])
@@ -769,6 +752,9 @@ class TestPhase2C1OwnershipAndProbe(_AppHarness):
         self.assertEqual(app.whisper_request_id_by_card, {})
         self.assertIsNone(app.latest_whisper_card)
         service.list_available_models.assert_called_once_with()
+        # Construction only publishes events; it never blocks on a dialog.
+        view.request.assert_not_called()
+        self.assertTrue(view.emit.called)
 
     def test_service_construction_does_not_eagerly_import_native_deps(self) -> None:
         probe_calls = []
@@ -823,8 +809,8 @@ class TestPhase2C1OwnershipAndProbe(_AppHarness):
         resolver_a = AudioSourceResolver()
         resolver_b = AudioSourceResolver()
 
-        app_a = object.__new__(VideoDownloaderApp)
-        app_b = object.__new__(VideoDownloaderApp)
+        app_a = object.__new__(AppController)
+        app_b = object.__new__(AppController)
         app_a.whisper_service = service_a
         app_a.audio_source_resolver = resolver_a
         app_b.whisper_service = service_b
@@ -1005,7 +991,7 @@ class TestPhase2C1QueueProtocol(_AppHarness):
         healthy_request = "req-after-half-live"
         self.app.whisper_request_id_by_card[half_live] = half_live_request
         self.app.whisper_request_id_by_card[healthy] = healthy_request
-        half_live.winfo_exists = mock.Mock(
+        half_live.is_alive = mock.Mock(
             side_effect=RuntimeError("Tk widget command no longer exists")
         )
 
@@ -1060,7 +1046,7 @@ class TestPhase2C1QueueProtocol(_AppHarness):
         self.assertEqual(self.app.whisper_request_id_by_card, {})
         self.assertIsNone(self.app.latest_whisper_card)
         self.assertEqual(self.app.card_entries, {})
-        self.assertFalse(card.winfo_exists())
+        self.assertFalse(card.is_alive())
 
     def test_late_events_after_clear_are_ignored(self) -> None:
         card = self._register_card()
@@ -1186,7 +1172,7 @@ class TestPhase2C2WhisperWorker(_AppHarness):
 
     def _copy_diagnostics_text(self) -> str:
         with mock.patch(
-            "link2vid.ui.main_window.get_yt_dlp_version",
+            "link2vid.app.controller.get_yt_dlp_version",
             return_value="1.2.3",
         ):
             self.app.copy_diagnostics()
@@ -1389,7 +1375,7 @@ class TestPhase2C2WhisperWorker(_AppHarness):
             snapshot.request_id,
         )
         with mock.patch(
-            "link2vid.ui.main_window.get_yt_dlp_version",
+            "link2vid.app.controller.get_yt_dlp_version",
             return_value="1.2.3",
         ):
             self.app.copy_diagnostics()
@@ -1506,7 +1492,7 @@ class TestPhase2C2WhisperWorker(_AppHarness):
         self.app.queue_whisper_snapshot = track_snapshot
 
         with mock.patch(
-            "link2vid.ui.main_window.model_cache_dir",
+            "link2vid.app.controller.model_cache_dir",
             side_effect=RuntimeError("cache root unavailable"),
         ):
             self.app.run_whisper_transcription(card, request)
@@ -2346,7 +2332,7 @@ class TestPhase2C2WhisperWorker(_AppHarness):
 
         self.assertEqual(self.app.whisper_runs_by_card, {})
         self.assertEqual(self.app.whisper_request_id_by_card, {})
-        self.assertFalse(card.winfo_exists())
+        self.assertFalse(card.is_alive())
 
     def test_stale_terminal_cannot_enable_newer_action(self) -> None:
         card = self._register_card()
@@ -2419,12 +2405,9 @@ class TestPhase2C2WhisperWorker(_AppHarness):
         self.app.whisper_models = []
         created = []
 
-        def fake_video_card(parent, **kwargs):
+        def fake_card_model(**kwargs):
             card = _FakeCard(kwargs.get("title", "card"))
             card.kwargs = kwargs
-            # Mimic pack / thumbnail APIs used by render_next_batch.
-            card.pack = lambda **kw: None
-            card.set_thumbnail_image = lambda image: None
             created.append(card)
             return card
 
@@ -2433,22 +2416,14 @@ class TestPhase2C2WhisperWorker(_AppHarness):
         ]
         self.app.rendered_count = 0
         self.app.batch_size = 20
-        self.app.results_scroll = mock.Mock()
-        self.app.load_more_button = mock.Mock()
-        self.app.load_more_button.winfo_manager.return_value = ""
         self.app.get_transcript_options = lambda entry: None
-        self.app.get_source_label = lambda entry: "default"
-        self.app.get_placeholder_image = lambda label: mock.Mock()
-        self.app.make_ctk_image = lambda image: image
-        self.app.queue_thumbnail = lambda *a, **k: None
-        self.app.build_metadata = lambda entry: ""
         self.app.update_card_buttons = lambda has_folder: None
         self.app.format_options = [{"format": "best", "label": "Best"}]
         self.app.handle_card_download = mock.Mock()
         self.app.handle_card_transcript = mock.Mock()
 
-        with mock.patch("link2vid.ui.main_window.VideoCard", new=fake_video_card):
-            self.app.render_next_batch = VideoDownloaderApp.render_next_batch.__get__(
+        with mock.patch("link2vid.app.controller.CardModel", new=fake_card_model):
+            self.app.render_next_batch = AppController.render_next_batch.__get__(
                 self.app
             )
             self.app.render_next_batch()
@@ -2717,8 +2692,12 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
             self.app.handle_card_whisper(card, "small")
         self._drain_whisper_queue()
 
-        self.app.progress.set.assert_called_once_with(0.63)
-        self.app.progress_bar.set.assert_called_once_with(0.63)
+        progress_events = [
+            call.args[1]
+            for call in self.app.view.emit.call_args_list
+            if call.args and call.args[0] == "progress"
+        ]
+        self.assertEqual(progress_events, [{"value": 0.63}])
         self.assertEqual(
             self.app.whisper_runs_by_card[card].phase,
             WhisperPhase.COMPLETE,
@@ -2813,7 +2792,7 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
             workspace = Path(outtmpl).parent
             audio_path = workspace / "adversarial.m4a"
             audio_path.write_bytes(b"audio")
-            global_calls_before = self.app.progress.set.call_count
+            global_calls_before = self._progress_emit_count()
             for invalid in (
                 None,
                 "not-a-dict",
@@ -2868,7 +2847,7 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
             )
             progress_hook({"status": "finished", "filename": str(audio_path)})
             global_progress_unchanged.append(
-                self.app.progress.set.call_count == global_calls_before
+                self._progress_emit_count() == global_calls_before
             )
             if post_hook:
                 post_hook(str(audio_path))
@@ -3120,18 +3099,19 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
         self.app.audio_source_resolver = AudioSourceResolver(
             download_manager=self.app.download_manager
         )
-        self.app.ui_choose_cookies_browser = VideoDownloaderApp.ui_choose_cookies_browser.__get__(
+        self.app.ui_choose_cookies_browser = AppController.ui_choose_cookies_browser.__get__(
             self.app
         )
 
-        def choose_browser(parent, suggested=None):
+        def choose_browser():
             self.assertTrue(self.app._whisper_cookie_retry_lock.locked())
             ui_order.append("choose")
             return "brave"
 
-        with mock.patch(
-            "link2vid.ui.main_window.prompt_cookie_browser",
-            side_effect=choose_browser,
+        with mock.patch.object(
+            self.app.view,
+            "request",
+            side_effect=lambda kind, payload: self._answer_later(choose_browser),
         ):
             worker = self._start_direct_worker(card, "req-threaded-cookie")
             # Before the main test pumps "call", the worker must be waiting.
@@ -3256,12 +3236,13 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
         self.app.audio_source_resolver = AudioSourceResolver(
             download_manager=self.app.download_manager
         )
-        self.app.ui_choose_cookies_browser = VideoDownloaderApp.ui_choose_cookies_browser.__get__(
+        self.app.ui_choose_cookies_browser = AppController.ui_choose_cookies_browser.__get__(
             self.app
         )
 
-        with mock.patch(
-            "link2vid.ui.main_window.prompt_cookie_browser",
+        with mock.patch.object(
+            self.app.view,
+            "request",
             side_effect=RuntimeError("window closing"),
         ):
             worker = self._start_direct_worker(card, "req-threaded-shutdown")
@@ -3509,7 +3490,7 @@ class TestWhisperDiagnosticsSelection(_AppHarness):
 
     def _copied_text(self) -> str:
         with mock.patch(
-            "link2vid.ui.main_window.get_yt_dlp_version",
+            "link2vid.app.controller.get_yt_dlp_version",
             return_value="1.2.3",
         ):
             self.app.copy_diagnostics()

@@ -1,7 +1,11 @@
-"""UI package for Link2Vid."""
+"""UI package for Link2Vid: a pywebview host for the HTML frontend in ``web/``.
 
-from .components import FooterBar, LogDrawer, VideoCard
-from .main_window import VideoDownloaderApp
-from .thumbnail_loader import ThumbnailLoader
+Import ``link2vid.ui.webview_app`` lazily; pywebview pulls in native GUI
+dependencies that headless callers (tests, ``--smoke``) do not need.
+"""
 
-__all__ = ["FooterBar", "LogDrawer", "VideoCard", "ThumbnailLoader", "VideoDownloaderApp"]
+from pathlib import Path
+
+WEB_ROOT = Path(__file__).resolve().parent / "web"
+
+__all__ = ["WEB_ROOT"]

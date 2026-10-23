@@ -12,7 +12,12 @@ FILES
   Link2Vid.exe     - engine (called by Link2Vid.bat; do not run files under build\)
   developer.json   - optional settings (copied here during build if present in repo root)
   bin\             - optional ffmpeg / deno sidecars
-  _internal\       - bundled Python libraries (required; do not delete)
+  _internal\       - bundled Python libraries and the app UI (required; do not delete)
+
+REQUIREMENTS
+  Microsoft Edge WebView2 Runtime (preinstalled on Windows 11 and current
+  Windows 10). If the window stays blank, install it from
+  https://developer.microsoft.com/microsoft-edge/webview2/
 
 WHISPER TRANSCRIPTION
   The first use of each model downloads weights to:

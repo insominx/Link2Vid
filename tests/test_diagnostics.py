@@ -331,9 +331,9 @@ class TestDiagnostics(unittest.TestCase):
         diagnostics_path = Path(__file__).resolve().parents[1] / "link2vid" / "core" / "diagnostics.py"
         source = diagnostics_path.read_text(encoding="utf-8")
         self.assertNotIn("link2vid.ui", source)
-        self.assertNotIn("VideoCard", source)
-        self.assertNotIn("VideoDownloaderApp", source)
-        self.assertNotIn("main_window", source)
+        self.assertNotIn("link2vid.app", source)
+        self.assertNotIn("CardModel", source)
+        self.assertNotIn("AppController", source)
 
 
 if __name__ == "__main__":

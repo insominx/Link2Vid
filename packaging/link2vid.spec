@@ -18,21 +18,27 @@ binaries = []
 hiddenimports = []
 
 # Selenium loads webdriver submodules lazily and launches Chrome through its
-# bundled selenium-manager binary; static analysis finds neither.
-for pkg in ("yt_dlp", "customtkinter", "selenium"):
+# bundled selenium-manager binary; static analysis finds neither. pywebview
+# ships its WebView2 interop DLLs and injected JS as package data.
+for pkg in ("yt_dlp", "webview", "selenium"):
     pkg_datas, pkg_binaries, pkg_hiddenimports = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries
     hiddenimports += pkg_hiddenimports
 
+# The HTML/CSS/JS frontend is loaded from disk by the WebView at runtime.
+datas += [
+    (str(ROOT / "link2vid" / "ui" / "web"), "link2vid/ui/web"),
+    (str(ROOT / "link2vid.ico"), "."),
+]
 datas += collect_data_files("faster_whisper")
 binaries += collect_dynamic_libs("ctranslate2")
 hiddenimports += collect_submodules("faster_whisper")
 
 hiddenimports += [
     "yt_dlp_ejs",
-    "PIL",
-    "PIL._tkinter_finder",
+    "clr",
+    "clr_loader",
     "m3u8",
     "selenium",
     "requests",
@@ -85,6 +91,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    icon=str(ROOT / "link2vid.ico"),
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
