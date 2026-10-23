@@ -648,7 +648,7 @@ svg.icon {
   width: 100%;
   max-width: 1040px;
   margin: 0 auto;
-  padding: 4px 28px 28px;
+  padding: 0 28px 28px;
 }
 
 .results-head {
@@ -661,7 +661,21 @@ svg.icon {
   min-height: 52px;
   padding: 8px 0;
   margin-bottom: 6px;
-  background: linear-gradient(var(--bg) 78%, transparent);
+  background: var(--bg);
+  /* Covers sub-pixel slivers of scrolled cards above the sticky edge. */
+  box-shadow: 0 -8px 0 var(--bg);
+}
+
+/* Soft fade so cards slide under the sticky header instead of being cut. */
+.results-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 100%;
+  height: 14px;
+  background: linear-gradient(var(--bg), transparent);
+  pointer-events: none;
 }
 
 .results-title {
@@ -1064,6 +1078,8 @@ svg.icon {
   z-index: 60;
   min-width: 220px;
   max-width: 340px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
   padding: 6px;
   border-radius: var(--r-md);
   background: var(--surface-2);
@@ -1363,8 +1379,9 @@ svg.icon {
   height: var(--statusbar-h);
   padding: 0 10px;
   border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg-sunken) 82%, transparent);
-  backdrop-filter: blur(12px);
+  /* Solid: nothing scrolls under the status bar, and backdrop blur at the
+     window edge samples wrapped content (stray progress-line pixels). */
+  background: var(--bg-sunken);
   font-size: 12.5px;
   color: var(--text-2);
 }

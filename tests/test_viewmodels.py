@@ -83,14 +83,16 @@ class TestCardModelControls(unittest.TestCase):
         self.assertEqual(emit.last("card")["format"], "bestaudio")
         self.assertEqual(emit.last("card")["transcript_choice"], 1)
 
-    def test_transcript_options_put_auto_select_first_and_sort_the_rest(self) -> None:
+    def test_transcript_options_list_subtitles_before_automatic_captions(self) -> None:
         tracks = [
             TranscriptTrack(source="subtitles", language="fr", label="French"),
             TranscriptTrack(source="subtitles", language="de", label="German"),
             TranscriptTrack(source="automatic captions", language="en", label="English"),
         ]
         card, _emit = _card(transcript_options=tracks)
-        self.assertEqual(card.describe()["transcripts"], ["Auto-select", "English", "French", "German"])
+        # Provider subtitles are curated; auto-translated captions are noisy and
+        # can number in the hundreds, so they follow the real tracks.
+        self.assertEqual(card.describe()["transcripts"], ["Auto-select", "French", "German", "English"])
         self.assertIsNone(card.selected_transcript)
 
     def test_default_selects_large_v3_when_present(self) -> None:

@@ -45,19 +45,31 @@ export function PopoverHost() {
       setPos(null);
       return;
     }
-    const a = pop.anchor.getBoundingClientRect();
-    const m = ref.current.getBoundingClientRect();
-    const margin = 8;
-    let left = pop.align === "start" ? a.left : a.right - m.width;
-    left = Math.max(margin, Math.min(left, innerWidth - m.width - margin));
-    let top = a.bottom + 6;
-    let origin = pop.align === "start" ? "top left" : "top right";
-    if (top + m.height > innerHeight - margin && a.top - m.height - 6 > margin) {
-      top = a.top - m.height - 6;
-      origin = origin.replace("top", "bottom");
-    }
-    top = Math.max(margin, Math.min(top, innerHeight - m.height - margin));
-    setPos({ left, top, origin });
+    const el = ref.current;
+    const place = () => {
+      if (!pop.anchor.isConnected) return;
+      const a = pop.anchor.getBoundingClientRect();
+      // offset* ignores the pop-in scale transform.
+      const width = el.offsetWidth;
+      const height = el.offsetHeight;
+      const margin = 8;
+      let left = pop.align === "start" ? a.left : a.right - width;
+      left = Math.max(margin, Math.min(left, innerWidth - width - margin));
+      let top = a.bottom + 6;
+      let origin = pop.align === "start" ? "top left" : "top right";
+      if (top + height > innerHeight - margin && a.top - height - 6 > margin) {
+        top = a.top - height - 6;
+        origin = origin.replace("top", "bottom");
+      }
+      top = Math.max(margin, Math.min(top, innerHeight - height - margin));
+      setPos((prev) =>
+        prev && prev.left === left && prev.top === top && prev.origin === origin ? prev : { left, top, origin }
+      );
+    };
+    place();
+    const observer = new ResizeObserver(place);
+    observer.observe(el);
+    return () => observer.disconnect();
   }, [pop && pop.id]);
 
   useEffect(() => {

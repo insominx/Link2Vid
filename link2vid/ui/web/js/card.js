@@ -33,6 +33,12 @@ function fileName(path) {
   return (path || "").split(/[\\/]/).pop();
 }
 
+function fileType(path) {
+  const name = fileName(path);
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot + 1).toUpperCase() : "file";
+}
+
 function prettyStatus(card, formats) {
   const text = card.status || "";
   const byLabel = Object.fromEntries(formats.map((f) => [f.label, formatUi(f).label]));
@@ -40,7 +46,7 @@ function prettyStatus(card, formats) {
   if ((m = text.match(/^Downloading \((.+)\)$/))) return `Downloading ${(byLabel[m[1]] || m[1]).toLowerCase()}`;
   if ((m = text.match(/^Retrying \((.+)\)$/))) return `Retrying with ${byLabel[m[1]] || m[1]}`;
   if ((m = text.match(/^Failed \((.+)\)$/))) return `Download failed · ${byLabel[m[1]] || m[1]}`;
-  if (text === "Complete") return card.outputs && card.outputs.length ? `Saved ${fileName(card.outputs[0])}` : "Saved";
+  if (text === "Complete") return card.outputs && card.outputs.length ? `Saved · ${fileType(card.outputs[0])}` : "Saved";
   if (text === "Already downloaded") return "Already in your folder";
   if ((m = text.match(/^Transcript saved \((.+)\)$/))) return `Captions saved · ${m[1]}`;
   if (text.startsWith("Whisper complete")) return text.includes("CPU fallback") ? "Transcript ready · ran on CPU" : "Transcript ready";
@@ -246,7 +252,7 @@ function Status({ card, formats }) {
         : state_ === "downloading"
         ? html`<span class="spinner" style="width:13px;height:13px"></span>`
         : null}
-      <span class="status-text" title=${card.status}>${text}</span>
+      <span class="status-text" title=${primary || card.status}>${text}</span>
       ${state_ === "downloading" && determinate && pct > 0 ? html`<span class="pct">${pct}%</span>` : null}
       ${state_ === "complete" && primary
         ? html`<span class="status-actions">

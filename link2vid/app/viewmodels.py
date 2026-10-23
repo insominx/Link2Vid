@@ -51,7 +51,7 @@ def normalize_format_options(options: Sequence[object] | None) -> list[tuple[str
 def normalize_transcript_options(
     options: Sequence[object] | None,
 ) -> tuple[list[tuple[str, object | None]], bool]:
-    """Return ``(options, available)`` with Auto-select first and the rest sorted.
+    """Return ``(options, available)``: Auto-select, then subtitles, then automatic captions.
 
     ``None`` means the entry carries no caption metadata, so Auto-select stays
     available; an empty sequence means the provider reported no tracks.
@@ -71,7 +71,13 @@ def normalize_transcript_options(
             label = getattr(option, "label", None) or str(option)
             value = option
         normalized.append((str(label), value))
-    normalized.sort(key=lambda item: item[0].lower())
+    # Real subtitle tracks first, machine-translated captions after.
+    normalized.sort(
+        key=lambda item: (
+            str(getattr(item[1], "source", "") or "").startswith("automatic"),
+            item[0].lower(),
+        )
+    )
     return [("Auto-select", None), *normalized], True
 
 
