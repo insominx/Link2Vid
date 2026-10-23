@@ -42,7 +42,7 @@ Automated baseline: `python -m pytest tests/`
 ## Local Whisper
 
 - Model list probes without downloading weights; a missing/broken native dependency disables only Whisper controls.
-- First use downloads the selected model to `%LOCALAPPDATA%\Link2Vid\models`; a later offline run succeeds from that cache.
+- First use downloads the selected model to `%LOCALAPPDATA%\Doggybag\models`; a later offline run succeeds from that cache.
 - A successful media download followed by Whisper reuses that exact unchanged file.
 - Whisper without a prior download acquires temporary `bestaudio`; the action-owned temporary workspace is removed after success and failure.
 - Auth-required temporary audio gets one browser-cookie prompt/retry when no preferred browser is saved.
@@ -95,15 +95,15 @@ Copy Diagnostics includes at minimum:
 
 ## Packaged build (Windows exe)
 
-After `build_windows.bat`, the `release/Link2Vid/` folder opens automatically. Start via `Link2Vid.bat` (smoke also runs during build). Optional: `packaging\smoke_frozen.bat`. Then spot-check using the scenarios above. See [windows-packaging.md](./windows-packaging.md) for layout.
+After `build_windows.bat`, the `release/Doggybag/` folder opens automatically. Start via `Doggybag.bat` (smoke also runs during build). Optional: `packaging\smoke_frozen.bat`. Then spot-check using the scenarios above. See [windows-packaging.md](./windows-packaging.md) for layout.
 
 Additional frozen-only checks:
 
-- The window opens with the Link2Vid icon and the web UI (no blank page); `Link2Vid.exe --smoke` also verifies the bundled `link2vid/ui/web` assets.
+- The window opens with the Doggybag icon and the web UI (no blank page); `Doggybag.exe --smoke` also verifies the bundled `doggybag/ui/web` assets.
 
 - Startup log shows `runtime: frozen=True ...` before the `UI runtime:` line.
 - Copy Diagnostics reports ffmpeg under `\bin\` when `bin/ffmpeg.exe` is staged.
-- `developer.json` beside `Link2Vid.exe` (or in `%APPDATA%\Link2Vid\`) prefills `default_url` when configured; bootstrap log shows resolved path.
+- `developer.json` beside `Doggybag.exe` (or in `%APPDATA%\Doggybag\`) prefills `default_url` when configured; bootstrap log shows resolved path.
 - One HLS or Best (A+V) download succeeds with staged ffmpeg and a JS runtime (system or `bin/deno.exe`).
-- `Link2Vid.exe --smoke` imports the Faster Whisper native/dynamic dependency closure.
+- `Doggybag.exe --smoke` imports the Faster Whisper native/dynamic dependency closure.
 - A frozen CPU transcription completes and writes `.txt` plus `.srt`; model weights remain in the shared external cache rather than `_internal/`.

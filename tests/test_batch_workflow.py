@@ -8,8 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from link2vid.core import CookiesRequiredError, NoTranscriptAvailableError
-from link2vid.app.controller import BatchPromptPolicy, AppController
+from doggybag.core import CookiesRequiredError, NoTranscriptAvailableError
+from doggybag.app.controller import BatchPromptPolicy, AppController
 
 
 class _UrlEntry:
@@ -244,7 +244,7 @@ class BatchHarness(unittest.TestCase):
         self.assertEqual(self.app.ui_choose_cookies_browser.call_count, 1)
 
     def _make_run(self, kind, items, skipped, default_count):
-        from link2vid.app.controller import BatchRun
+        from doggybag.app.controller import BatchRun
         run = BatchRun(kind, items, self.app.entries_generation, self.tmp.name)
         run.skipped = skipped
         run.default_format_count = default_count

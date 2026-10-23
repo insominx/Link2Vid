@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from link2vid.core.cookie_prefs import (
+from doggybag.core.cookie_prefs import (
     cookies_browser_label,
     load_preferred_cookies_browser,
     normalize_cookies_browser,

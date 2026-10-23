@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC_PATH = ROOT / "packaging" / "link2vid.spec"
+SPEC_PATH = ROOT / "packaging" / "doggybag.spec"
 BUILD_BAT = ROOT / "build_windows.bat"
 
 REQUIRED_HIDDENIMPORTS = {
@@ -62,13 +62,13 @@ class TestPackagingContract(unittest.TestCase):
         text = SPEC_PATH.read_text(encoding="utf-8")
         self.assertIn("COLLECT(", text)
         self.assertIn("exclude_binaries=True", text)
-        self.assertRegex(text, r'name=["\']Link2Vid["\']')
+        self.assertRegex(text, r'name=["\']Doggybag["\']')
 
     def test_spec_bundles_web_frontend_and_icon(self):
         text = SPEC_PATH.read_text(encoding="utf-8")
-        self.assertIn('ROOT / "link2vid" / "ui" / "web"', text)
-        self.assertIn('"link2vid/ui/web"', text)
-        self.assertIn('icon=str(ROOT / "link2vid.ico")', text)
+        self.assertIn('ROOT / "doggybag" / "ui" / "web"', text)
+        self.assertIn('"doggybag/ui/web"', text)
+        self.assertIn('icon=str(ROOT / "doggybag.ico")', text)
 
     def test_spec_entry_point(self):
         text = SPEC_PATH.read_text(encoding="utf-8")
@@ -109,8 +109,8 @@ class TestPackagingContract(unittest.TestCase):
     def test_build_script_outputs_release_folder(self):
         text = BUILD_BAT.read_text(encoding="utf-8")
         self.assertIn("--distpath release", text)
-        self.assertIn("release\\Link2Vid", text)
-        self.assertIn("Link2Vid.bat", text)
+        self.assertIn("release\\Doggybag", text)
+        self.assertIn("Doggybag.bat", text)
 
     def test_build_script_stages_real_ffmpeg_binaries(self):
         text = BUILD_BAT.read_text(encoding="utf-8")

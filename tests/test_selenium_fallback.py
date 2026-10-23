@@ -1,6 +1,6 @@
 import unittest
 
-from link2vid.core.selenium_fallback import (
+from doggybag.core.selenium_fallback import (
     collapse_selenium_media_candidates,
     collect_media_urls_from_html,
     extract_media_url,
@@ -58,7 +58,7 @@ class TestSeleniumFallback(unittest.TestCase):
         )
 
     def test_discover_media_urls_is_importable(self):
-        from link2vid.core.selenium_fallback import discover_media_urls
+        from doggybag.core.selenium_fallback import discover_media_urls
 
         self.assertTrue(callable(discover_media_urls))
 

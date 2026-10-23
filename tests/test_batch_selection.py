@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from link2vid.app.controller import AppController
+from doggybag.app.controller import AppController
 
 
 class _Card:

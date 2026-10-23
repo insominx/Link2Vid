@@ -1,6 +1,6 @@
 # Documentation index
 
-Stable docs for Link2Vid. Ephemeral agent notes belong in `docs/scratch/` (local only — do not commit).
+Stable docs for Doggybag. Ephemeral agent notes belong in `docs/scratch/` (local only — do not commit).
 
 ## Start here
 
@@ -26,4 +26,4 @@ Stable docs for Link2Vid. Ephemeral agent notes belong in `docs/scratch/` (local
 |---|---|
 | [agent-playbook-external-integrations.md](./agent-playbook-external-integrations.md) | Patterns for external-site and downloader reliability work; layer isolation, falsifiable controls, remedy ordering |
 
-Link2Vid-specific behavior belongs in `architecture.md` and `media-discovery-pipeline.md`; the playbook covers reusable strategies.
+Doggybag-specific behavior belongs in `architecture.md` and `media-discovery-pipeline.md`; the playbook covers reusable strategies.

@@ -14,8 +14,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SETUP_BAT = ROOT / "setup_link2vid.bat"
-RUN_BAT = ROOT / "run_link2vid.bat"
+SETUP_BAT = ROOT / "setup_doggybag.bat"
+RUN_BAT = ROOT / "run_doggybag.bat"
 BUILD_BAT = ROOT / "build_windows.bat"
 CHECK_PYTHON_BAT = ROOT / "packaging" / "check_python.bat"
 ENTRY = ROOT / "video_downloader.py"
@@ -38,37 +38,37 @@ REQUIRED_SMOKE_MODULES = (
 
 # Modules that must import on Python 3.10 (postponed annotations where needed).
 PYTHON310_IMPORT_TARGETS = (
-    ROOT / "link2vid" / "app" / "controller.py",
-    ROOT / "link2vid" / "core" / "whisper_transcription.py",
-    ROOT / "link2vid" / "core" / "audio_source.py",
-    ROOT / "link2vid" / "core" / "runtime.py",
-    ROOT / "link2vid" / "core" / "diagnostics.py",
-    ROOT / "link2vid" / "app" / "viewmodels.py",
+    ROOT / "doggybag" / "app" / "controller.py",
+    ROOT / "doggybag" / "core" / "whisper_transcription.py",
+    ROOT / "doggybag" / "core" / "audio_source.py",
+    ROOT / "doggybag" / "core" / "runtime.py",
+    ROOT / "doggybag" / "core" / "diagnostics.py",
+    ROOT / "doggybag" / "app" / "viewmodels.py",
 )
 
 PYTHON310_GRAMMAR_TARGETS = (
     ENTRY,
-    ROOT / "link2vid" / "core" / "__init__.py",
-    ROOT / "link2vid" / "core" / "audio_source.py",
-    ROOT / "link2vid" / "core" / "diagnostics.py",
-    ROOT / "link2vid" / "core" / "runtime.py",
-    ROOT / "link2vid" / "core" / "whisper_transcription.py",
-    ROOT / "link2vid" / "app" / "controller.py",
-    ROOT / "link2vid" / "app" / "viewmodels.py",
-    ROOT / "link2vid" / "app" / "desktop.py",
-    ROOT / "link2vid" / "ui" / "webview_app.py",
+    ROOT / "doggybag" / "core" / "__init__.py",
+    ROOT / "doggybag" / "core" / "audio_source.py",
+    ROOT / "doggybag" / "core" / "diagnostics.py",
+    ROOT / "doggybag" / "core" / "runtime.py",
+    ROOT / "doggybag" / "core" / "whisper_transcription.py",
+    ROOT / "doggybag" / "app" / "controller.py",
+    ROOT / "doggybag" / "app" / "viewmodels.py",
+    ROOT / "doggybag" / "app" / "desktop.py",
+    ROOT / "doggybag" / "ui" / "webview_app.py",
 )
 
 PYTHON310_IMPORT_MODULES = (
     "video_downloader",
-    "link2vid.core",
-    "link2vid.core.audio_source",
-    "link2vid.core.diagnostics",
-    "link2vid.core.runtime",
-    "link2vid.core.whisper_transcription",
-    "link2vid.app.controller",
-    "link2vid.app.viewmodels",
-    "link2vid.ui.webview_app",
+    "doggybag.core",
+    "doggybag.core.audio_source",
+    "doggybag.core.diagnostics",
+    "doggybag.core.runtime",
+    "doggybag.core.whisper_transcription",
+    "doggybag.app.controller",
+    "doggybag.app.viewmodels",
+    "doggybag.ui.webview_app",
 )
 
 
@@ -195,13 +195,13 @@ class TestPythonContract(unittest.TestCase):
 
     def test_check_python_reports_bare_old_command_on_path(self):
         with tempfile.TemporaryDirectory() as tmp:
-            fake = Path(tmp) / "link2vid_fake_old_python.cmd"
+            fake = Path(tmp) / "doggybag_fake_old_python.cmd"
             fake.write_text("@echo off\r\nexit /b 39\r\n", encoding="ascii")
             env = os.environ.copy()
             env["PATH"] = f"{tmp}{os.pathsep}{env.get('PATH', '')}"
-            completed = _run_check_python("link2vid_fake_old_python", env=env)
+            completed = _run_check_python("doggybag_fake_old_python", env=env)
 
-        _record_probe("bare-old-on-path", "link2vid_fake_old_python", completed)
+        _record_probe("bare-old-on-path", "doggybag_fake_old_python", completed)
         output = completed.stdout + completed.stderr
         self.assertEqual(completed.returncode, 2, output)
         self.assertIn("Python 3.10+ is required", output)
@@ -249,10 +249,10 @@ class TestPythonContract(unittest.TestCase):
         self.assertNotIn('where "%PYTHON%"', text)
 
         gate_idx = text.find("check_python.bat")
-        import_idx = text.find("from link2vid.ui.webview_app import run")
+        import_idx = text.find("from doggybag.ui.webview_app import run")
         self.assertGreater(gate_idx, 0)
         self.assertGreater(import_idx, gate_idx, "version gate must run before app import")
-        self.assertIn("Link2Vid was not launched", text)
+        self.assertIn("Doggybag was not launched", text)
         self.assertIn("pause", text)
         venv_idx = text.find(".venv\\Scripts\\python.exe")
         self.assertGreater(venv_idx, 0)
@@ -286,7 +286,7 @@ class TestPythonContract(unittest.TestCase):
 
     def test_build_gate_preserves_script_dir_containing_bang(self):
         with tempfile.TemporaryDirectory() as tmp:
-            probe_root = Path(tmp) / "Link2Vid!gateprobe"
+            probe_root = Path(tmp) / "Doggybag!gateprobe"
             packaging_dir = probe_root / "packaging"
             fake_bin = Path(tmp) / "fake-bin"
             packaging_dir.mkdir(parents=True)
@@ -388,11 +388,11 @@ class TestPythonContract(unittest.TestCase):
                     )
 
     def test_view_models_are_in_static_and_live_import_audits(self):
-        viewmodels = ROOT / "link2vid" / "app" / "viewmodels.py"
+        viewmodels = ROOT / "doggybag" / "app" / "viewmodels.py"
         self.assertIn(viewmodels, PYTHON310_IMPORT_TARGETS)
         self.assertIn(viewmodels, PYTHON310_GRAMMAR_TARGETS)
         self.assertIn(
-            "link2vid.app.viewmodels",
+            "doggybag.app.viewmodels",
             PYTHON310_IMPORT_MODULES,
         )
 
@@ -403,7 +403,7 @@ class TestPythonContract(unittest.TestCase):
         source = _read(ENTRY)
         for name in REQUIRED_SMOKE_MODULES:
             self.assertIn(name, source)
-        self.assertIn("link2vid.ui.webview_app", source)
+        self.assertIn("doggybag.ui.webview_app", source)
         # Must remain headless: no UI mainloop and no model construction/download.
         smoke_fn = None
         tree = ast.parse(source)
@@ -427,7 +427,7 @@ class TestPythonContract(unittest.TestCase):
 
         original = entry.SMOKE_IMPORTS
         try:
-            entry.SMOKE_IMPORTS = ("definitely_missing_link2vid_smoke_module_xyz",)
+            entry.SMOKE_IMPORTS = ("definitely_missing_doggybag_smoke_module_xyz",)
             with self.assertRaises(SystemExit) as ctx:
                 entry._run_smoke()
             self.assertEqual(ctx.exception.code, 1)

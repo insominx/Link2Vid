@@ -1,6 +1,6 @@
 # Cookie and JavaScript troubleshooting
 
-Practical fixes for common extraction and download failures in Link2Vid.
+Practical fixes for common extraction and download failures in Doggybag.
 
 For app architecture and fetch routing, see [architecture.md](./architecture.md).
 
@@ -10,7 +10,7 @@ For app architecture and fetch routing, see [architecture.md](./architecture.md)
    ```bash
    pip install -U yt-dlp
    ```
-   Or re-run `setup_link2vid.bat` to refresh dependencies in your venv.
+   Or re-run `setup_doggybag.bat` to refresh dependencies in your venv.
 
 2. **Install ffmpeg**
    - Required for merging best video + audio.
@@ -19,14 +19,14 @@ For app architecture and fetch routing, see [architecture.md](./architecture.md)
 3. **Install a JavaScript runtime**
    - yt-dlp needs a JS runtime for some protected or dynamically generated formats.
    - Install **deno**, **node**, or **bun** and ensure it is on PATH.
-   - Link2Vid lets yt-dlp fetch EJS solver scripts from GitHub automatically.
+   - Doggybag lets yt-dlp fetch EJS solver scripts from GitHub automatically.
    - If GitHub is blocked, install bundled scripts: `pip install -U "yt-dlp[default]"`.
 
 4. **Use cookies for restricted videos**
-   - Choose a browser in the **Cookies** menu in the status bar. Link2Vid reads that browser's cookies automatically.
+   - Choose a browser in the **Cookies** menu in the status bar. Doggybag reads that browser's cookies automatically.
    - For bot/age/consent errors it also tries other installed browsers.
    - If the chosen browser is open, fully quit it (including background/tray processes) and retry.
-   - Fetch can succeed on a public YouTube URL while the later media download still gets HTTP 403. For **Audio (MP3)**, that is often YouTube blocking audio-only DASH URLs, not missing cookies — Link2Vid then extracts MP3 from the same muxed file **Best (A+V)** uses.
+   - Fetch can succeed on a public YouTube URL while the later media download still gets HTTP 403. For **Audio (MP3)**, that is often YouTube blocking audio-only DASH URLs, not missing cookies — Doggybag then extracts MP3 from the same muxed file **Best (A+V)** uses.
 
 ## Windows browser cookies
 
@@ -38,7 +38,7 @@ yt-dlp has to *copy and decrypt* the browser cookie database, and on current Win
 | Could not copy Chrome cookie database | That Chromium browser is running and the DB is locked | Fully quit it (including background/tray processes) — but note decryption may still fail for the reason above |
 | Could not find firefox/edge cookies database | That browser is not installed, or has no profile | Ignore it; it is only a fallback candidate |
 
-Because of this, Link2Vid tries **without cookies first** and only escalates to browser cookies when the site actually asks for sign-in. Choosing a browser in the Cookies menu marks it as a deliberate choice and uses it immediately for the rest of that session.
+Because of this, Doggybag tries **without cookies first** and only escalates to browser cookies when the site actually asks for sign-in. Choosing a browser in the Cookies menu marks it as a deliberate choice and uses it immediately for the rest of that session.
 
 ### cookies.txt export
 
@@ -46,8 +46,8 @@ For genuinely gated content (private, members-only, age-restricted), a cookies.t
 
 1. Install a cookies-export extension (e.g. "Get cookies.txt LOCALLY" for Chrome/Edge/Brave, or "cookies.txt" for Firefox).
 2. Visit the site while logged in and export cookies to a `.txt` file (Netscape format).
-3. In Link2Vid's status bar, open **Cookies** → **Use a cookies.txt file…** and select that file.
-4. Link2Vid remembers the path and uses it for every download from then on.
+3. In Doggybag's status bar, open **Cookies** → **Use a cookies.txt file…** and select that file.
+4. Doggybag remembers the path and uses it for every download from then on.
 
 Re-export the file when the session expires or after you sign out/in.
 
@@ -72,16 +72,16 @@ So any range starting past the first mebibyte, or larger than it, is refused. Th
 yt-dlp --extractor-args "youtube:player_client=web_embedded" URL
 ```
 
-Link2Vid does this automatically: on a media 403 it retries YouTube downloads against `web_embedded`, then `tv_embedded`, then `mweb`, and logs which one worked. Nothing to install and no cookies involved.
+Doggybag does this automatically: on a media 403 it retries YouTube downloads against `web_embedded`, then `tv_embedded`, then `mweb`, and logs which one worked. Nothing to install and no cookies involved.
 
-Things that do **not** fix this, all verified: updating yt-dlp, browser cookies, a cookies.txt export, `--http-chunk-size`, and running a PO Token provider (the token is minted for `web_safari`, which returns no formats, while media comes from `android_vr`, which yt-dlp never tokenises). If the fallback clients are ever capped too, the fix is to find a client that still works and add it to `YOUTUBE_PLAYER_CLIENT_FALLBACKS` in `link2vid/core/downloader.py` — not to install anything.
+Things that do **not** fix this, all verified: updating yt-dlp, browser cookies, a cookies.txt export, `--http-chunk-size`, and running a PO Token provider (the token is minted for `web_safari`, which returns no formats, while media comes from `android_vr`, which yt-dlp never tokenises). If the fallback clients are ever capped too, the fix is to find a client that still works and add it to `YOUTUBE_PLAYER_CLIENT_FALLBACKS` in `doggybag/core/downloader.py` — not to install anything.
 
 ## Common errors
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Signature / cipher / extractor errors | Outdated yt-dlp | Update yt-dlp |
-| 403 / Forbidden / bot check / sign in | Auth, cookies, or YouTube blocking audio-only URLs | For video, choose a browser under **Cookies** and close it. If **Best (A+V)** works but **Audio (MP3)** 403s, retry Audio — Link2Vid extracts MP3 from the muxed file |
+| 403 / Forbidden / bot check / sign in | Auth, cookies, or YouTube blocking audio-only URLs | For video, choose a browser under **Cookies** and close it. If **Best (A+V)** works but **Audio (MP3)** 403s, retry Audio — Doggybag extracts MP3 from the muxed file |
 | No supported JavaScript runtime | Missing deno/node/bun | Install runtime, retry |
 | n challenge / only images available | EJS scripts missing or blocked | JS runtime + `yt-dlp[default]` |
 | No audio / silent video | Video-only format selected | Use **Best (A+V)** |
@@ -90,7 +90,7 @@ Things that do **not** fix this, all verified: updating yt-dlp, browser cookies,
 
 ## Fallback paths
 
-If yt-dlp fails, Link2Vid may try an embedded-page scrape, direct HTTP media scan, HLS detection, or Selenium with your confirmation. These paths are fallback routes for pages where a direct media URL can be discovered.
+If yt-dlp fails, Doggybag may try an embedded-page scrape, direct HTTP media scan, HLS detection, or Selenium with your confirmation. These paths are fallback routes for pages where a direct media URL can be discovered.
 
 Login-gated community pages that redirect yt-dlp to a site login URL (or that match credentials in local `developer.json`) are routed to the Selenium confirmation path. Ordinary cookie challenges on unconfigured public sites use the Cookies browser picker and automatic browser-cookie lookup.
 

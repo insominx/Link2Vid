@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Link2Vid is a desktop app for fetching and downloading video (and transcript) content from URLs, using yt-dlp, FFmpeg, and Selenium fallbacks where needed. Read this file before making changes or proposing commits.
+Doggybag is a desktop app for fetching and downloading video (and transcript) content from URLs, using yt-dlp, FFmpeg, and Selenium fallbacks where needed. Read this file before making changes or proposing commits.
 
 ## Do not commit agent or workflow artifacts
 
@@ -58,7 +58,7 @@ python -m pytest tests/test_ui_progress.py
 python -m pytest tests/test_viewmodels.py tests/test_webview_bridge.py
 ```
 
-Frontend-only iteration: serve `link2vid/ui/web/` with any static server and open `index.html?mock` (see [docs/ui-frontend.md](docs/ui-frontend.md)).
+Frontend-only iteration: serve `doggybag/ui/web/` with any static server and open `index.html?mock` (see [docs/ui-frontend.md](docs/ui-frontend.md)).
 
 Rules when interpreting results:
 
@@ -71,9 +71,9 @@ Rules when interpreting results:
 
 | Area | Role |
 |---|---|
-| `link2vid/core/` | Fetch, extract, download, Selenium fallback, diagnostics |
-| `link2vid/app/` | Toolkit-neutral controller, view models, `ViewPort` |
-| `link2vid/ui/` | pywebview host (`webview_app.py`) and the HTML/CSS/JS frontend (`web/`) |
+| `doggybag/core/` | Fetch, extract, download, Selenium fallback, diagnostics |
+| `doggybag/app/` | Toolkit-neutral controller, view models, `ViewPort` |
+| `doggybag/ui/` | pywebview host (`webview_app.py`) and the HTML/CSS/JS frontend (`web/`) |
 | `tests/` | Unit tests |
 | `video_downloader.py` | Application entry point |
 

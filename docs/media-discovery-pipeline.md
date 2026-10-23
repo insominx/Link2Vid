@@ -1,6 +1,6 @@
 # Media discovery pipeline
 
-How Link2Vid discovers multiple videos and chooses downloadable URLs. For overall fetch routing, see [architecture.md](./architecture.md). For generic integration patterns, see [agent-playbook-external-integrations.md](./agent-playbook-external-integrations.md).
+How Doggybag discovers multiple videos and chooses downloadable URLs. For overall fetch routing, see [architecture.md](./architecture.md). For generic integration patterns, see [agent-playbook-external-integrations.md](./agent-playbook-external-integrations.md).
 
 ## Fetch routing
 
@@ -8,14 +8,14 @@ Full chain is in [architecture.md](./architecture.md). Selenium-specific behavio
 
 1. `VideoFetcher.fetch` tries the Udio public song API for `udio.com/songs/{id}`, then yt-dlp, configured embedded-page scrape, HTTP direct scan, and HLS scan before returning `NeedsSelenium`.
    Udio sign-in is an email magic link, so those URLs never fall through to the username/password Selenium prompt. Creator/library pages are not fetched this way; paste a public song URL.
-2. **Unauthenticated HTTP path:** `scan_direct_media_entries` in `link2vid/core/extractors.py` returns direct media URLs from page HTML as card entries via `build_media_entries`.
-3. **Selenium path:** `selenium_fetch_media_entries` in `link2vid/core/selenium_fallback.py` logs in when needed, runs `discover_media_urls`, attaches titles/headers, returns entries for the card list.
+2. **Unauthenticated HTTP path:** `scan_direct_media_entries` in `doggybag/core/extractors.py` returns direct media URLs from page HTML as card entries via `build_media_entries`.
+3. **Selenium path:** `selenium_fetch_media_entries` in `doggybag/core/selenium_fallback.py` logs in when needed, runs `discover_media_urls`, attaches titles/headers, returns entries for the card list.
 
 User selects a card; entries with `_ffmpeg_headers` download via ffmpeg (`_download_direct_media`), others via yt-dlp.
 
 ## Selenium candidate normalization (authority)
 
-**Owner:** `link2vid/core/selenium_fallback.py`
+**Owner:** `doggybag/core/selenium_fallback.py`
 
 **Decision point:** `discover_media_urls` collects raw candidates (HTML, DOM, network logs, iframes), dedupes with broad `is_media_url`, then passes the list through `collapse_selenium_media_candidates` before return.
 
@@ -31,7 +31,7 @@ User selects a card; entries with `_ffmpeg_headers` download via ffmpeg (`_downl
 ## Filenames and output paths
 
 - Card titles come from page title, URL slug, DOM labels (best-effort), or numbered suffix (`Page Title - 1`).
-- Downloads use `sanitize_filename` + `unique_output_path` in `link2vid/core/helpers.py` (collision suffix, no overwrite).
+- Downloads use `sanitize_filename` + `unique_output_path` in `doggybag/core/helpers.py` (collision suffix, no overwrite).
 
 ## Verification
 

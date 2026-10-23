@@ -2,7 +2,7 @@ import os
 import tempfile
 import unittest
 
-from link2vid.core.helpers import sanitize_filename, unique_output_path
+from doggybag.core.helpers import sanitize_filename, unique_output_path
 
 
 class TestFilenameHelpers(unittest.TestCase):

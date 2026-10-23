@@ -31,21 +31,21 @@ def _run_smoke():
             print(f"[ERROR] Smoke import failed for {name}: {exc}", file=sys.stderr)
             raise SystemExit(1) from exc
 
-    for name in ("link2vid.app.controller", "link2vid.ui.webview_app"):
+    for name in ("doggybag.app.controller", "doggybag.ui.webview_app"):
         try:
             importlib.import_module(name)
         except Exception as exc:
             print(f"[ERROR] Smoke import failed for {name}: {exc}", file=sys.stderr)
             raise SystemExit(1) from exc
 
-    from link2vid.ui import WEB_ROOT
+    from doggybag.ui import WEB_ROOT
 
     for asset in ("index.html", "styles.css", "js/main.js", "vendor/preact-htm.module.js"):
         if not (WEB_ROOT / asset).is_file():
             print(f"[ERROR] Smoke check failed: missing UI asset {WEB_ROOT / asset}", file=sys.stderr)
             raise SystemExit(1)
 
-    from link2vid.core.runtime import startup_summary
+    from doggybag.core.runtime import startup_summary
 
     print(startup_summary())
     return 0
@@ -53,7 +53,7 @@ def _run_smoke():
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    parser = argparse.ArgumentParser(description="Link2Vid")
+    parser = argparse.ArgumentParser(description="Doggybag")
     parser.add_argument(
         "--smoke",
         action="store_true",
@@ -66,16 +66,17 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    from link2vid.core.runtime import bootstrap_runtime
+    from doggybag.core.runtime import bootstrap_runtime
 
     bootstrap_runtime()
 
     if args.smoke:
         return _run_smoke()
 
-    from link2vid.ui.webview_app import run
+    from doggybag.core.runtime import migrate_legacy_data
+    from doggybag.ui.webview_app import run
 
-    code = run(debug=args.devtools)
+    code = run(debug=args.devtools, startup_notes=migrate_legacy_data())
     # Closing the window ends the app. Fetch/download workers are not
     # interruptible, so do not let interpreter shutdown wait on them.
     for stream in (sys.stdout, sys.stderr):

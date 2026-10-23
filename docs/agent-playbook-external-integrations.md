@@ -2,7 +2,7 @@
 
 Reusable patterns for features that depend on fast-moving external tools (downloaders, runtimes, codecs) and external sites.
 
-**Link2Vid-specific:** see [architecture.md](./architecture.md) and [media-discovery-pipeline.md](./media-discovery-pipeline.md) for fetch routing, Selenium collapse, and filenames.
+**Doggybag-specific:** see [architecture.md](./architecture.md) and [media-discovery-pipeline.md](./media-discovery-pipeline.md) for fetch routing, Selenium collapse, and filenames.
 
 ## 1) Triage: classify before changing code
 

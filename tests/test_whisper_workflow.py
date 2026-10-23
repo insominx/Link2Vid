@@ -14,11 +14,11 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
-from link2vid.core.audio_source import AudioAcquisitionError, AudioSourceResolver, SourceKind
-from link2vid.core.diagnostics import WhisperDiagnosticsInput, build_diagnostics
-from link2vid.core.downloader import DownloadManager
-from link2vid.core.errors import CookiesRequiredError
-from link2vid.core.whisper_transcription import (
+from doggybag.core.audio_source import AudioAcquisitionError, AudioSourceResolver, SourceKind
+from doggybag.core.diagnostics import WhisperDiagnosticsInput, build_diagnostics
+from doggybag.core.downloader import DownloadManager
+from doggybag.core.errors import CookiesRequiredError
+from doggybag.core.whisper_transcription import (
     TranscriptionRequest,
     TranscriptionResult,
     VerifiedMedia,
@@ -26,7 +26,7 @@ from link2vid.core.whisper_transcription import (
     WhisperRunSnapshot,
     WhisperService,
 )
-from link2vid.app.controller import AppController
+from doggybag.app.controller import AppController
 
 
 class _FakeCard:
@@ -418,8 +418,8 @@ class TestVerifiedMediaAssociation(_AppHarness):
         def fake_ffmpeg(media_url, output_file, headers, progress_hook=None, duration_seconds=None, **_kwargs):
             Path(output_file).write_bytes(b"hls-bytes")
 
-        with mock.patch("link2vid.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
-            with mock.patch("link2vid.app.controller.unique_output_path", return_value=str(outfile)):
+        with mock.patch("doggybag.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
+            with mock.patch("doggybag.app.controller.unique_output_path", return_value=str(outfile)):
                 with mock.patch("threading.Thread") as thread_cls:
                     started = []
 
@@ -454,7 +454,7 @@ class TestVerifiedMediaAssociation(_AppHarness):
             seen["audio_only"] = kwargs.get("audio_only")
             Path(output_file).write_bytes(b"mp3-bytes")
 
-        with mock.patch("link2vid.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
+        with mock.patch("doggybag.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
             with mock.patch("threading.Thread") as thread_cls:
                 def capture_thread(target=None, daemon=None):
                     return mock.Mock(start=lambda: target())
@@ -485,8 +485,8 @@ class TestVerifiedMediaAssociation(_AppHarness):
         def fake_ffmpeg(media_url, output_file, headers, progress_hook=None, duration_seconds=None, **_kwargs):
             return None
 
-        with mock.patch("link2vid.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
-            with mock.patch("link2vid.app.controller.unique_output_path", return_value=str(outfile)):
+        with mock.patch("doggybag.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
+            with mock.patch("doggybag.app.controller.unique_output_path", return_value=str(outfile)):
                 with mock.patch("threading.Thread") as thread_cls:
                     def run_inline(target=None, daemon=None):
                         return mock.Mock(start=lambda: target())
@@ -700,21 +700,21 @@ class TestPhase2C1OwnershipAndProbe(_AppHarness):
         with ExitStack() as stack:
             stack.enter_context(
                 mock.patch(
-                    "link2vid.app.controller.ThreadPoolExecutor",
+                    "doggybag.app.controller.ThreadPoolExecutor",
                     return_value=executor,
                 )
             )
-            stack.enter_context(mock.patch("link2vid.app.controller.DownloadManager"))
-            stack.enter_context(mock.patch("link2vid.app.controller.VideoFetcher"))
+            stack.enter_context(mock.patch("doggybag.app.controller.DownloadManager"))
+            stack.enter_context(mock.patch("doggybag.app.controller.VideoFetcher"))
             stack.enter_context(
-                mock.patch("link2vid.app.controller.get_format_options", return_value=[])
+                mock.patch("doggybag.app.controller.get_format_options", return_value=[])
             )
             stack.enter_context(
-                mock.patch("link2vid.app.controller.get_yt_dlp_version", return_value="test")
+                mock.patch("doggybag.app.controller.get_yt_dlp_version", return_value="test")
             )
             stack.enter_context(
                 mock.patch(
-                    "link2vid.core.runtime.startup_summary",
+                    "doggybag.core.runtime.startup_summary",
                     return_value="test runtime",
                 )
             )
@@ -1172,7 +1172,7 @@ class TestPhase2C2WhisperWorker(_AppHarness):
 
     def _copy_diagnostics_text(self) -> str:
         with mock.patch(
-            "link2vid.app.controller.get_yt_dlp_version",
+            "doggybag.app.controller.get_yt_dlp_version",
             return_value="1.2.3",
         ):
             self.app.copy_diagnostics()
@@ -1375,7 +1375,7 @@ class TestPhase2C2WhisperWorker(_AppHarness):
             snapshot.request_id,
         )
         with mock.patch(
-            "link2vid.app.controller.get_yt_dlp_version",
+            "doggybag.app.controller.get_yt_dlp_version",
             return_value="1.2.3",
         ):
             self.app.copy_diagnostics()
@@ -1492,7 +1492,7 @@ class TestPhase2C2WhisperWorker(_AppHarness):
         self.app.queue_whisper_snapshot = track_snapshot
 
         with mock.patch(
-            "link2vid.app.controller.model_cache_dir",
+            "doggybag.app.controller.model_cache_dir",
             side_effect=RuntimeError("cache root unavailable"),
         ):
             self.app.run_whisper_transcription(card, request)
@@ -2166,7 +2166,7 @@ class TestPhase2C2WhisperWorker(_AppHarness):
         self.app.audio_source_resolver = mock.Mock(spec=AudioSourceResolver)
         self.app.audio_source_resolver.resolve.side_effect = AudioAcquisitionError(
             "Audio download failed\x00 token=AUDIOSECRET password='PASSSECRET' "
-            "at /tmp/link2vid/private.wav and /Users/bob/Library/cache.bin "
+            "at /tmp/doggybag/private.wav and /Users/bob/Library/cache.bin "
             "from https://audio.test/get?authorization=QUERYSECRET"
             + (" detail" * 80)
             + "\nTraceback: cookie=TRACECOOKIE"
@@ -2192,7 +2192,7 @@ class TestPhase2C2WhisperWorker(_AppHarness):
             "PASSSECRET",
             "QUERYSECRET",
             "TRACECOOKIE",
-            "/tmp/link2vid",
+            "/tmp/doggybag",
             "/Users/bob",
             "Traceback",
         ):
@@ -2422,7 +2422,7 @@ class TestPhase2C2WhisperWorker(_AppHarness):
         self.app.handle_card_download = mock.Mock()
         self.app.handle_card_transcript = mock.Mock()
 
-        with mock.patch("link2vid.app.controller.CardModel", new=fake_card_model):
+        with mock.patch("doggybag.app.controller.CardModel", new=fake_card_model):
             self.app.render_next_batch = AppController.render_next_batch.__get__(
                 self.app
             )
@@ -3051,7 +3051,7 @@ class TestPhase3BAcquisitionAndCookies(_AppHarness):
         self.app.ui_choose_cookies_browser = mock.Mock(side_effect=choose_browser)
 
         with mock.patch(
-            "link2vid.core.downloader.yt_dlp.YoutubeDL",
+            "doggybag.core.downloader.yt_dlp.YoutubeDL",
             new=FakeYoutubeDL,
         ), self._run_inline_threads():
             self.app.handle_card_whisper(card, "small")
@@ -3490,7 +3490,7 @@ class TestWhisperDiagnosticsSelection(_AppHarness):
 
     def _copied_text(self) -> str:
         with mock.patch(
-            "link2vid.app.controller.get_yt_dlp_version",
+            "doggybag.app.controller.get_yt_dlp_version",
             return_value="1.2.3",
         ):
             self.app.copy_diagnostics()
@@ -3501,7 +3501,7 @@ class TestWhisperDiagnosticsSelection(_AppHarness):
         self.assertIsNone(self.app._latest_whisper_diagnostics_input())
         text = self._copied_text()
         self.assertNotIn("Whisper model:", text)
-        self.assertIn("Link2Vid Diagnostics", text)
+        self.assertIn("Doggybag Diagnostics", text)
         self.assertIn("yt-dlp version: 1.2.3", text)
 
     def test_preparing_no_source_fields(self) -> None:

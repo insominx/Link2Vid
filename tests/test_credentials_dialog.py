@@ -1,6 +1,6 @@
 import unittest
 
-from link2vid.app.controller import site_label as _site_label
+from doggybag.app.controller import site_label as _site_label
 
 
 class TestCredentialsDialog(unittest.TestCase):

@@ -1,6 +1,6 @@
 import unittest
 
-from link2vid.core.dev_defaults import (
+from doggybag.core.dev_defaults import (
     credential_entries,
     dev_credentials_for_url,
     dev_domain,

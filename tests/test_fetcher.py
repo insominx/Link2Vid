@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from link2vid.core.errors import CookiesRequiredError
-from link2vid.core.fetcher import FetchError, FetchResults, NeedsCookies, NeedsSelenium, VideoFetcher
+from doggybag.core.errors import CookiesRequiredError
+from doggybag.core.fetcher import FetchError, FetchResults, NeedsCookies, NeedsSelenium, VideoFetcher
 from tests.fixtures.hosts import AUTH_HOST_A, VIDEO_HOST_A
 
 
@@ -38,10 +38,10 @@ class TestFetcher(unittest.TestCase):
             raise Exception("HTTP Error 403: Forbidden")
 
         fetcher = VideoFetcher(get_video_info=raise_err)
-        with patch("link2vid.core.fetcher.extract_embedded_page_videos", return_value=[]), patch(
-            "link2vid.core.fetcher.scan_direct_media_entries", return_value=[]
+        with patch("doggybag.core.fetcher.extract_embedded_page_videos", return_value=[]), patch(
+            "doggybag.core.fetcher.scan_direct_media_entries", return_value=[]
         ), patch(
-            "link2vid.core.fetcher.scan_direct_m3u8", return_value=None
+            "doggybag.core.fetcher.scan_direct_m3u8", return_value=None
         ):
             outcome = fetcher.fetch(f"https://{VIDEO_HOST_A}/watch/abc")
         self.assertIsInstance(outcome, NeedsCookies)
@@ -51,10 +51,10 @@ class TestFetcher(unittest.TestCase):
             raise Exception("some other failure")
 
         fetcher = VideoFetcher(get_video_info=raise_err)
-        with patch("link2vid.core.fetcher.extract_embedded_page_videos", return_value=[]), patch(
-            "link2vid.core.fetcher.scan_direct_media_entries", return_value=[]
+        with patch("doggybag.core.fetcher.extract_embedded_page_videos", return_value=[]), patch(
+            "doggybag.core.fetcher.scan_direct_media_entries", return_value=[]
         ), patch(
-            "link2vid.core.fetcher.scan_direct_m3u8", return_value=None
+            "doggybag.core.fetcher.scan_direct_m3u8", return_value=None
         ):
             outcome = fetcher.fetch(f"https://{VIDEO_HOST_A}/video")
         self.assertIsInstance(outcome, NeedsSelenium)
@@ -79,7 +79,7 @@ class TestFetcher(unittest.TestCase):
             raise Exception("some other failure")
 
         fetcher = VideoFetcher(get_video_info=raise_err, dev_defaults={"sites": [{"domain": AUTH_HOST_A}]})
-        with patch("link2vid.core.fetcher.extract_embedded_page_videos", return_value=[{"title": "ok"}]) as extractor:
+        with patch("doggybag.core.fetcher.extract_embedded_page_videos", return_value=[{"title": "ok"}]) as extractor:
             outcome = fetcher.fetch(f"https://www.{AUTH_HOST_A}/watch/abc")
         self.assertIsInstance(outcome, FetchResults)
         extractor.assert_called_once()

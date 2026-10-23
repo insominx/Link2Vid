@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from link2vid.core.fetcher import FetchError, FetchResults, NeedsLogin, VideoFetcher
-from link2vid.core.gdcvault import (
+from doggybag.core.fetcher import FetchError, FetchResults, NeedsLogin, VideoFetcher
+from doggybag.core.gdcvault import (
     GdcVaultLoginError,
     GdcVaultLoginRequired,
     extract_gdcvault_entries,
@@ -107,14 +107,14 @@ class TestFetcherGdcVaultRouting(unittest.TestCase):
             raise AssertionError("yt-dlp must not run when the Blazestreaming player resolves")
 
         fetcher = VideoFetcher(get_video_info=fail_ytdlp)
-        with patch("link2vid.core.fetcher.extract_gdcvault_entries", return_value=[{"title": "Talk"}]):
+        with patch("doggybag.core.fetcher.extract_gdcvault_entries", return_value=[{"title": "Talk"}]):
             outcome = fetcher.fetch(TALK_URL)
         self.assertIsInstance(outcome, FetchResults)
 
     def test_members_only_without_credentials_asks_for_login_not_selenium(self):
         fetcher = VideoFetcher(get_video_info=MagicMock())
         with patch(
-            "link2vid.core.fetcher.extract_gdcvault_entries",
+            "doggybag.core.fetcher.extract_gdcvault_entries",
             side_effect=GdcVaultLoginRequired("members-only"),
         ):
             outcome = fetcher.fetch(TALK_URL)
@@ -123,7 +123,7 @@ class TestFetcherGdcVaultRouting(unittest.TestCase):
     def test_rejected_login_is_fetch_error(self):
         fetcher = VideoFetcher(get_video_info=MagicMock())
         with patch(
-            "link2vid.core.fetcher.extract_gdcvault_entries",
+            "doggybag.core.fetcher.extract_gdcvault_entries",
             side_effect=GdcVaultLoginError("Username or Password is Incorrect."),
         ):
             outcome = fetcher.fetch(TALK_URL, "member@example.com", "wrong")
@@ -132,14 +132,14 @@ class TestFetcherGdcVaultRouting(unittest.TestCase):
     def test_older_talk_without_player_falls_back_to_ytdlp_with_credentials(self):
         get_video_info = MagicMock(return_value=[{"title": "Old talk"}])
         fetcher = VideoFetcher(get_video_info=get_video_info)
-        with patch("link2vid.core.fetcher.extract_gdcvault_entries", return_value=[]):
+        with patch("doggybag.core.fetcher.extract_gdcvault_entries", return_value=[]):
             outcome = fetcher.fetch(TALK_URL, "member@example.com", "secret")
         self.assertIsInstance(outcome, FetchResults)
         get_video_info.assert_called_once_with(TALK_URL, "member@example.com", "secret")
 
     def test_older_talk_ytdlp_failure_is_fetch_error_not_selenium(self):
         fetcher = VideoFetcher(get_video_info=MagicMock(side_effect=IndexError("list index out of range")))
-        with patch("link2vid.core.fetcher.extract_gdcvault_entries", return_value=[]):
+        with patch("doggybag.core.fetcher.extract_gdcvault_entries", return_value=[]):
             outcome = fetcher.fetch(TALK_URL)
         self.assertIsInstance(outcome, FetchError)
         self.assertIn("No playable GDC Vault video", str(outcome.error))

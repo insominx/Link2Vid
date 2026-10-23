@@ -10,8 +10,8 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
-from link2vid.app.controller import AppController, entry_details
-from link2vid.ui.webview_app import Bridge, WebViewPresenter
+from doggybag.app.controller import AppController, entry_details
+from doggybag.ui.webview_app import Bridge, WebViewPresenter
 
 
 class _RecordingView:
@@ -52,10 +52,10 @@ class _RecordingView:
 def _controller(view) -> AppController:
     tmp = tempfile.mkdtemp()
     with ExitStack() as stack:
-        stack.enter_context(mock.patch("link2vid.app.controller.DownloadManager"))
-        stack.enter_context(mock.patch("link2vid.app.controller.VideoFetcher"))
-        stack.enter_context(mock.patch("link2vid.app.controller.get_yt_dlp_version", return_value="test"))
-        stack.enter_context(mock.patch("link2vid.core.runtime.startup_summary", return_value="runtime"))
+        stack.enter_context(mock.patch("doggybag.app.controller.DownloadManager"))
+        stack.enter_context(mock.patch("doggybag.app.controller.VideoFetcher"))
+        stack.enter_context(mock.patch("doggybag.app.controller.get_yt_dlp_version", return_value="test"))
+        stack.enter_context(mock.patch("doggybag.core.runtime.startup_summary", return_value="runtime"))
         stack.enter_context(mock.patch.object(AppController, "load_dev_defaults", return_value={}))
         stack.enter_context(mock.patch.object(AppController, "get_default_output_path", return_value=tmp))
         stack.enter_context(
@@ -216,7 +216,7 @@ class TestControllerIntents(unittest.TestCase):
         self.assertEqual(self.app.prompt_for_credentials("https://example.com/v"), (None, None))
 
     def test_output_folder_and_cookie_file_settings_publish(self) -> None:
-        with mock.patch("link2vid.app.controller.store_preferred_cookies_path"):
+        with mock.patch("doggybag.app.controller.store_preferred_cookies_path"):
             self.app.set_cookies_file("C:/cookies.txt")
             self.app.set_cookies_file(None)
         self.app.set_output_folder("D:/Media")
@@ -260,7 +260,7 @@ class TestBridgeSafety(unittest.TestCase):
         bridge = Bridge(presenter, ready)
         card = mock.Mock(outputs=["C:/out/a.mp4"])
         bridge._attach(mock.Mock(cards=[card]))
-        with mock.patch("link2vid.ui.webview_app.desktop") as desktop:
+        with mock.patch("doggybag.ui.webview_app.desktop") as desktop:
             self.assertFalse(bridge.open_output("C:/Windows/system32/calc.exe"))
             bridge.open_output("C:/out/a.mp4", True)
         desktop.reveal_path.assert_called_once_with("C:/out/a.mp4")
@@ -268,7 +268,7 @@ class TestBridgeSafety(unittest.TestCase):
 
     def test_open_url_rejects_non_http_schemes(self) -> None:
         bridge = Bridge(mock.Mock(), threading.Event())
-        with mock.patch("link2vid.ui.webview_app.webbrowser") as browser:
+        with mock.patch("doggybag.ui.webview_app.webbrowser") as browser:
             self.assertFalse(bridge.open_url("file:///C:/x"))
             self.assertTrue(bridge.open_url("https://example.com"))
         browser.open.assert_called_once_with("https://example.com")

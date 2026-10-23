@@ -1,6 +1,6 @@
 import unittest
 
-from link2vid.core.error_classification import classify_error, get_error_guidance
+from doggybag.core.error_classification import classify_error, get_error_guidance
 
 
 class TestErrorClassification(unittest.TestCase):

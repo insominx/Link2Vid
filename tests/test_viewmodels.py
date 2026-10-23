@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import unittest
 
-from link2vid.app.viewmodels import (
+from doggybag.app.viewmodels import (
     BatchBarModel,
     CardModel,
     LogModel,
     infer_card_state,
     log_level,
 )
-from link2vid.core.downloader import TranscriptTrack
+from doggybag.core.downloader import TranscriptTrack
 
 
 class _Recorder:

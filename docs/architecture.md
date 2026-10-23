@@ -1,44 +1,44 @@
-# Link2Vid architecture
+# Doggybag architecture
 
 Current layout and data flow for the desktop app. For media discovery details (Selenium collapse, filenames), see [media-discovery-pipeline.md](./media-discovery-pipeline.md).
 
 ## Design decisions
 
 - **Python engine, web frontend** — yt-dlp, Faster Whisper, and Selenium are Python libraries, so the engine stays in Python. The UI is HTML/CSS/JS (Preact + htm, vendored, no build step) hosted in a native window by [pywebview](https://pywebview.flowrl.com/) (WebView2 on Windows). This replaced CustomTkinter, which could not deliver a modern look.
-- **Three layers** — `link2vid/core/` (fetch/download/transcribe, UI-agnostic), `link2vid/app/` (toolkit-neutral orchestration + view models), `link2vid/ui/` (pywebview host + `web/` frontend). See [ui-frontend.md](./ui-frontend.md) for the frontend.
+- **Three layers** — `doggybag/core/` (fetch/download/transcribe, UI-agnostic), `doggybag/app/` (toolkit-neutral orchestration + view models), `doggybag/ui/` (pywebview host + `web/` frontend). See [ui-frontend.md](./ui-frontend.md) for the frontend.
 - **Python owns state** — view models publish JSON events; the page renders them and sends intents back. No business rules live in JavaScript.
 - **Thread safety** — one controller dispatcher thread owns all session state; network, downloads, transcription, and Selenium run on workers that hop back through `ui_queue`.
 
 ## Entry point
 
-- `video_downloader.py` — `main()` parses `--smoke` / `--devtools`, calls `bootstrap_runtime()`, then lazy-imports `link2vid.ui.webview_app.run` or runs headless import smoke.
-- `link2vid/core/runtime.py` — frozen/dev `app_dir`, `developer.json` search order, optional `<app_dir>/bin` PATH prepend (entry-only; not imported from other core modules).
-- `link2vid/app/controller.py` — `AppController`: fetch/download/transcript/Whisper/batch orchestration, dialogs, diagnostics, the `ui_queue` dispatcher.
-- `link2vid/app/viewmodels.py` — `CardModel`, `BatchBarModel`, `FooterModel`, `UrlModel`, `LogModel`: state objects that replaced the old widgets and publish events.
-- `link2vid/app/view.py` — `ViewPort` protocol (events, dialogs, toasts, clipboard, file pickers) and a headless `NullView`.
-- `link2vid/app/desktop.py` — clipboard text, open/reveal files.
-- `link2vid/ui/webview_app.py` — `WebViewPresenter` (batches events into the page), `Bridge` (JS API), window setup and Windows title-bar theming.
-- `link2vid/ui/web/` — `index.html`, `styles.css`, `js/*.js`, `vendor/preact-htm.module.js`.
+- `video_downloader.py` — `main()` parses `--smoke` / `--devtools`, calls `bootstrap_runtime()`, then lazy-imports `doggybag.ui.webview_app.run` or runs headless import smoke.
+- `doggybag/core/runtime.py` — frozen/dev `app_dir`, `developer.json` search order, optional `<app_dir>/bin` PATH prepend (entry-only; not imported from other core modules).
+- `doggybag/app/controller.py` — `AppController`: fetch/download/transcript/Whisper/batch orchestration, dialogs, diagnostics, the `ui_queue` dispatcher.
+- `doggybag/app/viewmodels.py` — `CardModel`, `BatchBarModel`, `FooterModel`, `UrlModel`, `LogModel`: state objects that replaced the old widgets and publish events.
+- `doggybag/app/view.py` — `ViewPort` protocol (events, dialogs, toasts, clipboard, file pickers) and a headless `NullView`.
+- `doggybag/app/desktop.py` — clipboard text, open/reveal files.
+- `doggybag/ui/webview_app.py` — `WebViewPresenter` (batches events into the page), `Bridge` (JS API), window setup and Windows title-bar theming.
+- `doggybag/ui/web/` — `index.html`, `styles.css`, `js/*.js`, `vendor/preact-htm.module.js`.
 
-Windows portable builds: `build_windows.bat` → `release/Link2Vid/`; launch via `Link2Vid.bat`. See [windows-packaging.md](./windows-packaging.md).
+Windows portable builds: `build_windows.bat` → `release/Doggybag/`; launch via `Doggybag.bat`. See [windows-packaging.md](./windows-packaging.md).
 
 ## Core modules
 
 | Module | Role |
 |---|---|
-| `link2vid/core/runtime.py` | Frozen detection, app directory, `developer.json` resolution, sidecar `bin/` PATH bootstrap |
-| `link2vid/core/fetcher.py` | `VideoFetcher.fetch` — yt-dlp first, then configured embedded-page scrape, direct media scan, HLS scan, or `NeedsSelenium` |
-| `link2vid/core/downloader.py` | `DownloadManager` — yt-dlp media/transcript downloads, cookie/browser retry, progress hooks |
-| `link2vid/core/audio_source.py` | `AudioSourceResolver` — exact verified-media reuse or action-owned temporary `bestaudio` acquisition and cleanup |
-| `link2vid/core/whisper_transcription.py` | Faster Whisper contracts, model validation/cache, serialized CUDA-or-CPU transcription, paired text/SRT output |
-| `link2vid/core/extractors.py` | Embedded-page scrape, HTTP direct media scan, HLS detection, `build_media_entries` |
-| `link2vid/core/udio.py` | Public Udio `/songs/{id}` metadata → direct MP3 entries (no login) |
-| `link2vid/core/gdcvault.py` | GDC Vault talks → Blazestreaming HLS entry; HTTP login only for members-only pages |
-| `link2vid/core/selenium_fallback.py` | Browser login, `discover_media_urls`, `collapse_selenium_media_candidates`, `selenium_fetch_media_entries` |
-| `link2vid/core/helpers.py` | URL normalization, filename sanitization, FFmpeg helper, format options |
-| `link2vid/core/diagnostics.py` | `build_diagnostics` for Copy Diagnostics |
-| `link2vid/core/error_classification.py` | Error reason codes and user guidance |
-| `link2vid/core/dev_defaults.py` | Optional local `developer.json` credentials per domain |
+| `doggybag/core/runtime.py` | Frozen detection, app directory, `developer.json` resolution, sidecar `bin/` PATH bootstrap |
+| `doggybag/core/fetcher.py` | `VideoFetcher.fetch` — yt-dlp first, then configured embedded-page scrape, direct media scan, HLS scan, or `NeedsSelenium` |
+| `doggybag/core/downloader.py` | `DownloadManager` — yt-dlp media/transcript downloads, cookie/browser retry, progress hooks |
+| `doggybag/core/audio_source.py` | `AudioSourceResolver` — exact verified-media reuse or action-owned temporary `bestaudio` acquisition and cleanup |
+| `doggybag/core/whisper_transcription.py` | Faster Whisper contracts, model validation/cache, serialized CUDA-or-CPU transcription, paired text/SRT output |
+| `doggybag/core/extractors.py` | Embedded-page scrape, HTTP direct media scan, HLS detection, `build_media_entries` |
+| `doggybag/core/udio.py` | Public Udio `/songs/{id}` metadata → direct MP3 entries (no login) |
+| `doggybag/core/gdcvault.py` | GDC Vault talks → Blazestreaming HLS entry; HTTP login only for members-only pages |
+| `doggybag/core/selenium_fallback.py` | Browser login, `discover_media_urls`, `collapse_selenium_media_candidates`, `selenium_fetch_media_entries` |
+| `doggybag/core/helpers.py` | URL normalization, filename sanitization, FFmpeg helper, format options |
+| `doggybag/core/diagnostics.py` | `build_diagnostics` for Copy Diagnostics |
+| `doggybag/core/error_classification.py` | Error reason codes and user guidance |
+| `doggybag/core/dev_defaults.py` | Optional local `developer.json` credentials per domain |
 
 ## Fetch flow
 
@@ -99,7 +99,7 @@ Whisper click
   → request-scoped queue events update card state and sanitized diagnostics
 ```
 
-Model weights live at `%LOCALAPPDATA%\Link2Vid\models` (fallback `~/.link2vid/models`) in both source and frozen modes. They are downloaded on demand and are never bundled. Whisper work is serialized inside the service to bound native model memory; stale queue events cannot clear or overwrite a newer card run.
+Model weights live at `%LOCALAPPDATA%\Doggybag\models` (fallback `~/.doggybag/models`) in both source and frozen modes. They are downloaded on demand and are never bundled. Whisper work is serialized inside the service to bound native model memory; stale queue events cannot clear or overwrite a newer card run.
 
 ## Threading and UI safety
 
@@ -107,21 +107,21 @@ Model weights live at `%LOCALAPPDATA%\Link2Vid\models` (fallback `~/.link2vid/mo
 - Background work: fetch, downloads, Whisper audio acquisition/transcription, Selenium. Thumbnails load in the WebView directly (`referrerpolicy="no-referrer"`).
 - Pattern: workers enqueue `(action, payload)` tuples; `process_ui_queue` drains them on the dispatcher thread. Page intents arrive on pywebview worker threads and are `post`ed onto the same queue.
 - Dialogs (`_ask`) block the calling thread until the page answers. On the dispatcher thread the queue keeps draining while a dialog is open, so progress and logs stay live.
-- `WebViewPresenter` coalesces events (latest `card` per key, latest `progress`/`batch`/`settings`) and flushes at most ~30 times per second via `window.L2V.receive(...)`.
+- `WebViewPresenter` coalesces events (latest `card` per key, latest `progress`/`batch`/`settings`) and flushes at most ~30 times per second via `window.DBG.receive(...)`.
 - Batch workers iterate frozen `BatchItem` values and never read live entry/selection maps.
 
 ## Local configuration
 
 - `developer.json` (gitignored) — optional `use_defaults`, `cookies_browser`, per-domain login credentials.
-- `%APPDATA%/Link2Vid/settings.json` — persisted cookie-browser and cookies.txt preferences.
-- `%LOCALAPPDATA%/Link2Vid/webview` — WebView2 profile (page storage only).
-- **Dev mode:** resolved from cwd, then entry script directory, then `%APPDATA%/Link2Vid/`.
-- **Frozen (packaged) mode:** resolved from directory containing `Link2Vid.exe`, then `%APPDATA%/Link2Vid/`. Build may copy repo-root `developer.json` into `release/Link2Vid/`.
+- `%APPDATA%/Doggybag/settings.json` — persisted cookie-browser and cookies.txt preferences.
+- `%LOCALAPPDATA%/Doggybag/webview` — WebView2 profile (page storage only).
+- **Dev mode:** resolved from cwd, then entry script directory, then `%APPDATA%/Doggybag/`.
+- **Frozen (packaged) mode:** resolved from directory containing `Doggybag.exe`, then `%APPDATA%/Doggybag/`. Build may copy repo-root `developer.json` into `release/Doggybag/`.
 - Credentials apply only when the fetch URL matches a configured domain (including subdomains).
 
 ## Tests
 
-Pure logic lives in `link2vid/core/` and is covered by `tests/`. Run from repo root:
+Pure logic lives in `doggybag/core/` and is covered by `tests/`. Run from repo root:
 
 ```bash
 python -m pytest tests/

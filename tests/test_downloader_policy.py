@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from link2vid.core.downloader import DownloadManager, TranscriptTrack
-from link2vid.core.errors import CookiesRequiredError, NoTranscriptAvailableError
+from doggybag.core.downloader import DownloadManager, TranscriptTrack
+from doggybag.core.errors import CookiesRequiredError, NoTranscriptAvailableError
 from tests.fixtures.hosts import VIDEO_HOST_A
 
 
@@ -113,7 +113,7 @@ class TestDownloaderPolicy(unittest.TestCase):
 
         manager = DownloadManager(ydl_logger=DummyLogger())
         manager._browser_candidates = lambda: ["firefox"]
-        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("doggybag.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             with self.assertRaises(CookiesRequiredError) as ctx:
                 manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out")
         self.assertIs(ctx.exception.original, first_err)
@@ -146,7 +146,7 @@ class TestDownloaderPolicy(unittest.TestCase):
                 raise Exception("unable to download video data: HTTP Error 403: Forbidden")
 
         manager = DownloadManager(ydl_logger=DummyLogger())
-        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("doggybag.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             self.assertTrue(manager.download("https://www.youtube.com/watch?v=abc", "best", "out"))
         self.assertEqual(seen, [None, "web_embedded"])
         self.assertEqual(manager.last_player_client, "web_embedded")
@@ -168,7 +168,7 @@ class TestDownloaderPolicy(unittest.TestCase):
                 raise Exception("unable to download video data: HTTP Error 403: Forbidden")
 
         manager = DownloadManager(ydl_logger=DummyLogger())
-        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("doggybag.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             self.assertFalse(manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out"))
         self.assertEqual(seen, [None])
 
@@ -189,7 +189,7 @@ class TestDownloaderPolicy(unittest.TestCase):
                 return None
 
         manager = DownloadManager(ydl_logger=DummyLogger())
-        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("doggybag.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             self.assertTrue(
                 manager.download(f"https://{VIDEO_HOST_A}/watch/1", "bestaudio", "out", extract_audio=True)
             )
@@ -217,7 +217,7 @@ class TestDownloaderPolicy(unittest.TestCase):
                 return None
 
         manager = DownloadManager(ydl_logger=DummyLogger())
-        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("doggybag.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             self.assertTrue(
                 manager.download(f"https://{VIDEO_HOST_A}/watch/1", "bestaudio", "out", extract_audio=True)
             )
@@ -241,7 +241,7 @@ class TestDownloaderPolicy(unittest.TestCase):
                 return None
 
         manager = DownloadManager(ydl_logger=DummyLogger())
-        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("doggybag.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             self.assertTrue(manager.download(f"https://{VIDEO_HOST_A}/watch/1", "bestaudio", "out"))
         self.assertEqual(captured["format"], "bestaudio")
         self.assertNotIn("postprocessors", captured)
@@ -272,7 +272,7 @@ class TestDownloaderPolicy(unittest.TestCase):
             ydl_logger=DummyLogger(),
             get_cookies_browser=lambda: "brave",
         )
-        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("doggybag.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             self.assertTrue(manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out"))
         self.assertNotIn("cookiesfrombrowser", captured)
         self.assertEqual(manager.last_cookies_mode, "none")
@@ -308,7 +308,7 @@ class TestDownloaderPolicy(unittest.TestCase):
             get_cookies_browser=lambda: "chrome",
         )
         manager._browser_candidates = lambda: ["chrome", "brave", "edge"]
-        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("doggybag.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             self.assertTrue(manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out"))
         # Cookieless first, then the preferred browser, then the rest.
         self.assertEqual(seen, [None, "chrome", "brave"])
@@ -346,7 +346,7 @@ class TestDownloaderPolicy(unittest.TestCase):
             get_cookies_browser=lambda: "chrome",
         )
         manager._browser_candidates = lambda: ["chrome", "brave"]
-        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("doggybag.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             with self.assertRaises(CookiesRequiredError) as ctx:
                 manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out")
         self.assertEqual(seen, [None, "chrome", "brave"])
@@ -375,7 +375,7 @@ class TestDownloaderPolicy(unittest.TestCase):
             get_cookies_path=lambda: "C:\\cookies.txt",
             get_cookies_browser=lambda: "brave",
         )
-        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("doggybag.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             self.assertTrue(manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out"))
         self.assertEqual(captured["cookiefile"], "C:\\cookies.txt")
         self.assertNotIn("cookiesfrombrowser", captured)
@@ -401,7 +401,7 @@ class TestDownloaderPolicy(unittest.TestCase):
 
         manager = DownloadManager(ydl_logger=DummyLogger())
         manager._browser_candidates = lambda: ["brave"]
-        with patch("link2vid.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
+        with patch("doggybag.core.downloader.yt_dlp.YoutubeDL", FakeYoutubeDL):
             self.assertTrue(manager.download(f"https://{VIDEO_HOST_A}/watch/1", "best", "out"))
         self.assertEqual(manager.last_cookies_mode, "browser")
         self.assertEqual(manager.last_cookies_browser, "brave")

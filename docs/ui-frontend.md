@@ -1,10 +1,10 @@
 # UI frontend
 
-How the Link2Vid window is built, how it talks to Python, and how to iterate on it. For the module map and threading model, see [architecture.md](./architecture.md).
+How the Doggybag window is built, how it talks to Python, and how to iterate on it. For the module map and threading model, see [architecture.md](./architecture.md).
 
 ## Stack
 
-- **Host:** [pywebview](https://pywebview.flowrl.com/) (`link2vid/ui/webview_app.py`). On Windows it uses the Edge WebView2 runtime. pywebview serves `link2vid/ui/web/` over its local HTTP server so ES modules load normally.
+- **Host:** [pywebview](https://pywebview.flowrl.com/) (`doggybag/ui/webview_app.py`). On Windows it uses the Edge WebView2 runtime. pywebview serves `doggybag/ui/web/` over its local HTTP server so ES modules load normally.
 - **Frontend:** plain ES modules with [Preact](https://preactjs.com/) and [htm](https://github.com/developit/htm) tagged templates, from the vendored `web/vendor/preact-htm.module.js` (htm 3.1.1 standalone build, unmodified). There is no bundler or Node build step; edit a file and reload.
 - **Styling:** one stylesheet (`web/styles.css`) built on CSS custom properties. Dark and light themes follow the Windows setting (`prefers-color-scheme`). The native title bar is recolored to match through DWM (`style_title_bar`).
 
@@ -23,7 +23,7 @@ How the Link2Vid window is built, how it talks to Python, and how to iterate on 
 
 ## Python ↔ page protocol
 
-Python owns all state. View models in `link2vid/app/viewmodels.py` and the controller emit `(event, payload)` pairs. `WebViewPresenter` batches them and calls `window.L2V.receive([{t, p}, ...])` at most about 30 times per second. It keeps only the latest `card` per key and the latest `progress`, `batch`, `settings`, `fetching`, `url`, and `results_state`.
+Python owns all state. View models in `doggybag/app/viewmodels.py` and the controller emit `(event, payload)` pairs. `WebViewPresenter` batches them and calls `window.DBG.receive([{t, p}, ...])` at most about 30 times per second. It keeps only the latest `card` per key and the latest `progress`, `batch`, `settings`, `fetching`, `url`, and `results_state`.
 
 | Event | Payload | Meaning |
 |---|---|---|
@@ -67,7 +67,7 @@ python video_downloader.py --devtools
 To work on the frontend without Python, serve the folder and open the mock:
 
 ```bash
-python -m http.server 8765 --directory link2vid/ui/web
+python -m http.server 8765 --directory doggybag/ui/web
 # open http://127.0.0.1:8765/index.html?mock
 ```
 

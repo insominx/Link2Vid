@@ -12,9 +12,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest import mock
 
-from link2vid.core import audio_source as aus
-from link2vid.core.errors import CookiesRequiredError
-from link2vid.core.whisper_transcription import TranscriptionRequest, VerifiedMedia
+from doggybag.core import audio_source as aus
+from doggybag.core.errors import CookiesRequiredError
+from doggybag.core.whisper_transcription import TranscriptionRequest, VerifiedMedia
 
 
 def _request(
@@ -722,7 +722,7 @@ class TestPhase3ATemporaryAcquisition(unittest.TestCase):
                 self.assertEqual(outtmpl.name, "%(title)s.%(ext)s")
                 self.assertEqual(outtmpl.parent, workspaces[0])
                 self.assertNotEqual(workspaces[0].resolve(), root.resolve())
-                self.assertTrue(workspaces[0].name.startswith("link2vid-whisper-audio-"))
+                self.assertTrue(workspaces[0].name.startswith("doggybag-whisper-audio-"))
                 self.assertIn("progress_hook", kwargs)
                 self.assertIn("post_hook", kwargs)
                 self.assertEqual(lease.kind, aus.SourceKind.TEMPORARY)
@@ -1255,7 +1255,7 @@ class TestPhase3ATemporaryAcquisition(unittest.TestCase):
 
 class TestExportsAndLazyImport(unittest.TestCase):
     def test_core_package_exports_audio_source_symbols(self):
-        import link2vid.core as core
+        import doggybag.core as core
 
         self.assertIs(core.SourceKind, aus.SourceKind)
         self.assertIs(core.SourceLease, aus.SourceLease)

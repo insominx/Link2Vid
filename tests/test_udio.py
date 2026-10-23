@@ -1,8 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-from link2vid.core.fetcher import FetchError, FetchResults, VideoFetcher
-from link2vid.core.udio import extract_udio_entries, is_udio_url, udio_song_id_from_url
+from doggybag.core.fetcher import FetchError, FetchResults, VideoFetcher
+from doggybag.core.udio import extract_udio_entries, is_udio_url, udio_song_id_from_url
 
 
 SAMPLE_SONG = {
@@ -64,7 +64,7 @@ class TestFetcherUdioRouting(unittest.TestCase):
 
         fetcher = VideoFetcher(get_video_info=fail_ytdlp)
         with patch(
-            "link2vid.core.fetcher.extract_udio_entries",
+            "doggybag.core.fetcher.extract_udio_entries",
             return_value=[{"title": "Xanderlin - Joyful Teamwork"}],
         ):
             outcome = fetcher.fetch("https://www.udio.com/songs/p1h7wicWYgm3jexNfumB2F")
@@ -76,7 +76,7 @@ class TestFetcherUdioRouting(unittest.TestCase):
             raise AssertionError("yt-dlp must not run for Udio URLs")
 
         fetcher = VideoFetcher(get_video_info=fail_ytdlp)
-        with patch("link2vid.core.fetcher.extract_udio_entries", return_value=[]):
+        with patch("doggybag.core.fetcher.extract_udio_entries", return_value=[]):
             outcome = fetcher.fetch("https://www.udio.com/songs/missing")
         self.assertIsInstance(outcome, FetchError)
         self.assertIn("email link", str(outcome.error).lower())

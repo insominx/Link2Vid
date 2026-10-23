@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from link2vid.core import whisper_transcription as wt
+from doggybag.core import whisper_transcription as wt
 
 
 class TestVerifiedMedia(unittest.TestCase):
@@ -21,7 +21,7 @@ class TestVerifiedMedia(unittest.TestCase):
             self.assertTrue(media.is_current())
 
     def test_is_current_false_when_missing(self):
-        path = Path("definitely-missing-link2vid-media.bin")
+        path = Path("definitely-missing-doggybag-media.bin")
         media = wt.VerifiedMedia(path=path, size=1, modified_at=1.0)
         self.assertFalse(media.is_current())
 
@@ -39,7 +39,7 @@ class TestVerifiedMedia(unittest.TestCase):
             self.assertFalse(media.is_current())
 
     def test_is_current_handles_stat_oserror(self):
-        path = Path("unreadable-link2vid-media.bin")
+        path = Path("unreadable-doggybag-media.bin")
         media = wt.VerifiedMedia(path=path, size=1, modified_at=1.0)
         with mock.patch.object(Path, "is_file", return_value=True):
             with mock.patch.object(Path, "stat", side_effect=OSError("filesystem unavailable")):
@@ -192,7 +192,7 @@ class TestWhisperModelAdapter(unittest.TestCase):
 
 class TestCorePackageExports(unittest.TestCase):
     def test_core_exports_contract_symbols(self):
-        import link2vid.core as core
+        import doggybag.core as core
 
         self.assertIs(core.VerifiedMedia, wt.VerifiedMedia)
         self.assertIs(core.WhisperPhase, wt.WhisperPhase)
@@ -339,7 +339,7 @@ class TestPairedWriters(unittest.TestCase):
                 )
             self.assertEqual(list(root.glob("*.txt")), [])
             self.assertEqual(list(root.glob("*.srt")), [])
-            self.assertEqual(list(root.glob(".link2vid-whisper-*")), [])
+            self.assertEqual(list(root.glob(".doggybag-whisper-*")), [])
 
     def test_nonfinite_timestamp_cleans_owned_pair_and_temps(self):
         cases = [
@@ -424,7 +424,7 @@ class TestPairedWriters(unittest.TestCase):
                         segments=[_FakeSegment(0, 1, "hello")],
                     )
             self.assertEqual(list(root.glob("Demo.whisper.en*")), [])
-            self.assertEqual(list(root.glob(".link2vid-whisper-*")), [])
+            self.assertEqual(list(root.glob(".doggybag-whisper-*")), [])
 
     def test_race_on_placeholder_advances_suffix(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -499,7 +499,7 @@ class TestPairedWriters(unittest.TestCase):
             self.assertEqual(existing.read_text(encoding="utf-8"), "keep me")
             self.assertEqual(unrelated.read_bytes(), b"still usable")
             self.assertEqual(list(root.glob("Demo.whisper.*")), [])
-            self.assertEqual(list(root.glob(".link2vid-whisper-*")), [])
+            self.assertEqual(list(root.glob(".doggybag-whisper-*")), [])
 
     def test_second_placeholder_close_failure_removes_only_action_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -548,7 +548,7 @@ class TestPairedWriters(unittest.TestCase):
             self.assertEqual(existing.read_text(encoding="utf-8"), "keep me")
             self.assertEqual(unrelated.read_bytes(), b"still usable")
             self.assertEqual(list(root.glob("Demo.whisper.*")), [])
-            self.assertEqual(list(root.glob(".link2vid-whisper-*")), [])
+            self.assertEqual(list(root.glob(".doggybag-whisper-*")), [])
 
 
 class TestWhisperService(unittest.TestCase):
@@ -876,7 +876,7 @@ class TestWhisperService(unittest.TestCase):
             self.assertEqual(service.loaded_slot, ("small", "cuda", "float16"))
             self.assertEqual(list(root.glob("*.whisper.*.txt")), [])
             self.assertEqual(list(root.glob("*.whisper.*.srt")), [])
-            self.assertEqual(list(root.glob(".link2vid-whisper-*")), [])
+            self.assertEqual(list(root.glob(".doggybag-whisper-*")), [])
             self.assertTrue(source.is_file())
 
     def test_generator_is_consumed_lazily_during_write(self):
@@ -928,12 +928,12 @@ class TestWhisperService(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    os.environ.get("LINK2VID_WHISPER_SMOKE_MEDIA"),
-    "Set LINK2VID_WHISPER_SMOKE_MEDIA to a local spoken media path for opt-in smoke",
+    os.environ.get("DOGGYBAG_WHISPER_SMOKE_MEDIA"),
+    "Set DOGGYBAG_WHISPER_SMOKE_MEDIA to a local spoken media path for opt-in smoke",
 )
 class TestWhisperServiceOptInSmoke(unittest.TestCase):
     def test_real_local_media_produces_pair(self):
-        media = Path(os.environ["LINK2VID_WHISPER_SMOKE_MEDIA"])
+        media = Path(os.environ["DOGGYBAG_WHISPER_SMOKE_MEDIA"])
         self.assertTrue(media.is_file(), f"smoke media missing: {media}")
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

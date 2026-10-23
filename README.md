@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/images/logo.png" width="96" height="96" alt="Link2Vid logo">
+  <img src="docs/images/logo.png" width="96" height="96" alt="Doggybag logo">
 </p>
 
-<h1 align="center">Link2Vid</h1>
+<h1 align="center">Doggybag</h1>
 
 <p align="center">
-  <strong>Paste a link. Keep the video.</strong><br>
+  <strong>Paste a link. Take it home.</strong><br>
   A fast, good-looking desktop app for saving video, MP3 audio, captions, and local AI transcripts<br>
   from YouTube and the 1,000+ other sites <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a> supports.
 </p>
@@ -19,26 +19,28 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/hero.png" alt="Link2Vid downloading a playlist: one video saved, one transcribing with Whisper, two downloading with live progress" width="900">
+  <img src="docs/images/hero.png" alt="Doggybag downloading a playlist: one video saved, one transcribing with Whisper, two downloading with live progress" width="900">
 </p>
 
 ---
 
-## Why Link2Vid
+## Why Doggybag
 
-yt-dlp is the best downloader there is, and it runs in a terminal. Link2Vid puts a calm, modern window around it, so you can paste a link and click once instead of memorizing format flags.
+Like the box you take home from a good restaurant: Doggybag packs up the best bits of the internet so you can enjoy them later, offline.
+
+yt-dlp is the best downloader there is, and it runs in a terminal. Doggybag puts a calm, modern window around it, so you can paste a link and click once instead of memorizing format flags.
 
 - **One click, the right file.** Pick **Video**, **Video only**, or **Audio (MP3)** per item, then **Download**. When it's done, **Open** it or **Show in folder** straight from the card.
 - **Whole playlists and channels.** Every item starts selected. Untick what you don't want, then **Download 18** grabs the rest one by one, each in its own format.
 - **Captions in any language.** Save the subtitles the site already has, with a searchable language list. Real subtitle tracks are listed before machine translations.
 - **Transcripts that never leave your PC.** Run [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) locally (GPU if you have one, CPU if not) to get `.txt` and `.srt` files for anything with speech, even when the site has no captions.
-- **Works when sites push back.** Sign-in walls, cookie prompts, HLS streams, embedded players: Link2Vid tries the simple path first and only asks you for a browser or credentials when a site actually needs them.
+- **Works when sites push back.** Sign-in walls, cookie prompts, HLS streams, embedded players: Doggybag tries the simple path first and only asks you for a browser or credentials when a site actually needs them.
 - **Feels like a real app.** Light and dark mode that follow Windows, live progress, `Ctrl+V` anywhere to paste, drag-and-drop links, and an Activity log with one-click diagnostics when something goes wrong.
 
 ## See it in action
 
 <p align="center">
-  <img src="docs/images/demo.webp" alt="Typing a link, fetching it, and downloading the video in Link2Vid" width="900">
+  <img src="docs/images/demo.webp" alt="Typing a link, fetching it, and downloading the video in Doggybag" width="900">
 </p>
 
 ## A closer look
@@ -56,8 +58,8 @@ yt-dlp is the best downloader there is, and it runs in a terminal. Link2Vid puts
   </tr>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/images/home.png" alt="Link2Vid start screen with a large link box">
-      <p><strong>Start with a link.</strong> Paste it, drop it on the window, or let Link2Vid offer the link already on your clipboard.</p>
+      <img src="docs/images/home.png" alt="Doggybag start screen with a large link box">
+      <p><strong>Start with a link.</strong> Paste it, drop it on the window, or let Doggybag offer the link already on your clipboard.</p>
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/dialog.png" alt="Dialog asking which browser to borrow sign-in cookies from">
@@ -71,10 +73,10 @@ yt-dlp is the best downloader there is, and it runs in a terminal. Link2Vid puts
 You need **Windows 10 or 11** and **Python 3.10+**. The Edge WebView2 runtime that draws the window ships with Windows 11 and current Windows 10.
 
 ```bash
-git clone https://github.com/insominx/Link2Vid.git
-cd Link2Vid
-setup_link2vid.bat        # installs Python dependencies, checks for ffmpeg and a JS runtime
-run_link2vid.bat          # launches the app
+git clone https://github.com/insominx/Doggybag.git
+cd Doggybag
+setup_doggybag.bat        # installs Python dependencies, checks for ffmpeg and a JS runtime
+run_doggybag.bat          # launches the app
 ```
 
 Optional, but recommended:
@@ -89,7 +91,7 @@ Optional, but recommended:
 build_windows.bat
 ```
 
-This produces a self-contained folder at `release\Link2Vid\`, with ffmpeg bundled if it's on your `PATH`. Start it with `Link2Vid.bat` or `Link2Vid.exe`, pin it to the taskbar, or zip the folder to move it to another PC. See [docs/windows-packaging.md](docs/windows-packaging.md) for details.
+This produces a self-contained folder at `release\Doggybag\`, with ffmpeg bundled if it's on your `PATH`. Start it with `Doggybag.bat` or `Doggybag.exe`, pin it to the taskbar, or zip the folder to move it to another PC. See [docs/windows-packaging.md](docs/windows-packaging.md) for details.
 
 ## Using it
 
@@ -112,7 +114,7 @@ The bottom bar holds your **download folder** (click to change it) and the **Coo
 
 Whisper is independent of provider captions. If you already downloaded the media, it reuses that exact file. Otherwise it fetches temporary best-quality audio and deletes it after the run. Each run writes `<title>.whisper.<language>.txt` and `.srt` to your download folder, without overwriting existing files.
 
-Model weights download on first use and are cached at `%LOCALAPPDATA%\Link2Vid\models` (not bundled into portable builds). Link2Vid uses CUDA when CTranslate2 reports a GPU and otherwise runs on CPU. **large-v3** is the default for the best general-purpose quality; pick `distil-large-v3.5` for faster English-only transcripts, or a smaller model on modest hardware.
+Model weights download on first use and are cached at `%LOCALAPPDATA%\Doggybag\models` (not bundled into portable builds). Doggybag uses CUDA when CTranslate2 reports a GPU and otherwise runs on CPU. **large-v3** is the default for the best general-purpose quality; pick `distil-large-v3.5` for faster English-only transcripts, or a smaller model on modest hardware.
 
 ## Troubleshooting
 
@@ -122,7 +124,7 @@ Model weights download on first use and are cached at `%LOCALAPPDATA%\Link2Vid\m
 
 ## How it works
 
-Link2Vid is a Python app. yt-dlp, Faster Whisper, and Selenium do the heavy lifting in `link2vid/core/`. A toolkit-neutral controller in `link2vid/app/` orchestrates fetches, downloads, batches, and transcription, and publishes state as events. The window is [pywebview](https://pywebview.flowrl.com/) (WebView2) rendering a small Preact + htm frontend in `link2vid/ui/web/`, with no Node or build step.
+Doggybag is a Python app. yt-dlp, Faster Whisper, and Selenium do the heavy lifting in `doggybag/core/`. A toolkit-neutral controller in `doggybag/app/` orchestrates fetches, downloads, batches, and transcription, and publishes state as events. The window is [pywebview](https://pywebview.flowrl.com/) (WebView2) rendering a small Preact + htm frontend in `doggybag/ui/web/`, with no Node or build step.
 
 | Doc | What's inside |
 |---|---|
@@ -139,13 +141,13 @@ Issues and pull requests are welcome.
 ```bash
 python -m pytest tests/                       # full suite, headless (no window needed)
 python video_downloader.py --devtools         # run with WebView developer tools
-python -m http.server 8765 --directory link2vid/ui/web
+python -m http.server 8765 --directory doggybag/ui/web
 # then open http://127.0.0.1:8765/index.html?mock to work on the UI with a fake backend
 ```
 
 ## Use responsibly
 
-Link2Vid is for content you have the right to download: your own uploads, public-domain and Creative Commons works, or anything the site's terms allow. Respect creators and each site's terms of service.
+Doggybag is for content you have the right to download: your own uploads, public-domain and Creative Commons works, or anything the site's terms allow. Respect creators and each site's terms of service.
 
 ## Credits
 

@@ -1,15 +1,15 @@
-Link2Vid (Windows portable build)
+Doggybag (Windows portable build)
 =================================
 
 START HERE
-  Double-click Link2Vid.bat in this folder.
+  Double-click Doggybag.bat in this folder.
 
 WHAT THIS FOLDER IS
   The complete packaged app. Zip this entire folder to move or share it.
 
 FILES
-  Link2Vid.bat     - start the app (use this)
-  Link2Vid.exe     - engine (called by Link2Vid.bat; do not run files under build\)
+  Doggybag.bat     - start the app (use this)
+  Doggybag.exe     - engine (called by Doggybag.bat; do not run files under build\)
   developer.json   - optional settings (copied here during build if present in repo root)
   bin\             - optional ffmpeg / deno sidecars
   _internal\       - bundled Python libraries and the app UI (required; do not delete)
@@ -21,9 +21,9 @@ REQUIREMENTS
 
 WHISPER TRANSCRIPTION
   The first use of each model downloads weights to:
-    %LOCALAPPDATA%\Link2Vid\models
+    %LOCALAPPDATA%\Doggybag\models
   Model weights are not bundled in this folder. Keep that cache for offline use.
-  A compatible NVIDIA setup can accelerate transcription. Link2Vid selects CPU
+  A compatible NVIDIA setup can accelerate transcription. Doggybag selects CPU
   when CTranslate2 reports no CUDA device; CUDA loading errors are shown.
   Successful runs save both .txt and .srt files.
 

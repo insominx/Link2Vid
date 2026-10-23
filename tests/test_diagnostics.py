@@ -1,7 +1,7 @@
 import unittest
 from pathlib import Path
 
-from link2vid.core.diagnostics import (
+from doggybag.core.diagnostics import (
     WHISPER_DIAGNOSTIC_MAX_LENGTH,
     WhisperDiagnosticsInput,
     build_diagnostics,
@@ -17,7 +17,7 @@ def _legacy_kwargs(**overrides):
         "selected_title": "Example",
         "selected_format": "best",
         "output_path": "C:\\Users\\mlinh\\Downloads",
-        "debug_log_path": "C:\\Users\\mlinh\\Downloads\\link2vid-debug.log",
+        "debug_log_path": "C:\\Users\\mlinh\\Downloads\\doggybag-debug.log",
         "transcript_source": "subtitles",
         "transcript_languages": ["en", "es"],
         "yt_dlp_version": "1.2.3",
@@ -40,12 +40,12 @@ class TestDiagnostics(unittest.TestCase):
     def test_build_diagnostics_contains_required_fields(self):
         lines = build_diagnostics(**_legacy_kwargs())
         output = "\n".join(lines)
-        self.assertIn("Link2Vid Diagnostics", output)
+        self.assertIn("Doggybag Diagnostics", output)
         self.assertIn("URL: https://example.com/video", output)
         self.assertIn("Action kind: transcript", output)
         self.assertIn("Selected format: best", output)
         self.assertIn("Output path: C:\\Users\\mlinh\\Downloads", output)
-        self.assertIn("Debug log: C:\\Users\\mlinh\\Downloads\\link2vid-debug.log", output)
+        self.assertIn("Debug log: C:\\Users\\mlinh\\Downloads\\doggybag-debug.log", output)
         self.assertIn("Transcript source: subtitles", output)
         self.assertIn("Transcript languages: en, es", output)
         self.assertIn("yt-dlp version: 1.2.3", output)
@@ -65,13 +65,13 @@ class TestDiagnostics(unittest.TestCase):
     def test_legacy_order_unchanged_without_whisper(self):
         lines = build_diagnostics(**_legacy_kwargs(whisper=None))
         expected_prefix = [
-            "Link2Vid Diagnostics",
+            "Doggybag Diagnostics",
             "URL: https://example.com/video",
             "Action kind: transcript",
             "Selected title: Example",
             "Selected format: best",
             "Output path: C:\\Users\\mlinh\\Downloads",
-            "Debug log: C:\\Users\\mlinh\\Downloads\\link2vid-debug.log",
+            "Debug log: C:\\Users\\mlinh\\Downloads\\doggybag-debug.log",
             "Transcript source: subtitles",
             "Transcript languages: en, es",
             "yt-dlp version: 1.2.3",
@@ -101,7 +101,7 @@ class TestDiagnostics(unittest.TestCase):
         whisper = WhisperDiagnosticsInput(
             model_name="small",
             phase="preparing_audio",
-            cache_root="C:\\Users\\mlinh\\AppData\\Local\\Link2Vid\\models",
+            cache_root="C:\\Users\\mlinh\\AppData\\Local\\Doggybag\\models",
             source_kind=None,
             effective_device=None,
             fallback_used=False,
@@ -111,7 +111,7 @@ class TestDiagnostics(unittest.TestCase):
         self.assertIn("Whisper model: small", lines)
         self.assertIn("Whisper phase: preparing_audio", lines)
         self.assertIn(
-            "Whisper cache root: C:\\Users\\mlinh\\AppData\\Local\\Link2Vid\\models",
+            "Whisper cache root: C:\\Users\\mlinh\\AppData\\Local\\Doggybag\\models",
             lines,
         )
         self.assertIn("Whisper source kind: n/a", lines)
@@ -328,10 +328,10 @@ class TestDiagnostics(unittest.TestCase):
         self.assertTrue(all("\r" not in line and "\x00" not in line for line in lines))
 
     def test_diagnostics_module_does_not_import_ui(self):
-        diagnostics_path = Path(__file__).resolve().parents[1] / "link2vid" / "core" / "diagnostics.py"
+        diagnostics_path = Path(__file__).resolve().parents[1] / "doggybag" / "core" / "diagnostics.py"
         source = diagnostics_path.read_text(encoding="utf-8")
-        self.assertNotIn("link2vid.ui", source)
-        self.assertNotIn("link2vid.app", source)
+        self.assertNotIn("doggybag.ui", source)
+        self.assertNotIn("doggybag.app", source)
         self.assertNotIn("CardModel", source)
         self.assertNotIn("AppController", source)
 

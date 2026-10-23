@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from link2vid.core.extractors import (
+from doggybag.core.extractors import (
     build_media_entries,
     extract_page_title,
     resolve_blazestreaming_playback_url,
@@ -78,7 +78,7 @@ class TestExtractors(unittest.TestCase):
             "Bonus Molly Mahoney S Vivid Visual Trio",
         )
 
-    @patch("link2vid.core.extractors.requests.Session")
+    @patch("doggybag.core.extractors.requests.Session")
     def test_scan_direct_media_entries_finds_multiple_playlists(self, session_cls):
         session = session_cls.return_value
         response = session.get.return_value
@@ -135,7 +135,7 @@ def _gdc_session(session_cls, aliases_payload, *, alias_status=200):
 
 
 class TestBlazestreamingResolution(unittest.TestCase):
-    @patch("link2vid.core.extractors.requests.Session")
+    @patch("doggybag.core.extractors.requests.Session")
     def test_gdc_vault_page_uses_alias_playback_url(self, session_cls):
         _gdc_session(
             session_cls,
@@ -147,13 +147,13 @@ class TestBlazestreamingResolution(unittest.TestCase):
         self.assertEqual(entries[0]["formats"][0]["ext"], "m3u8")
         self.assertEqual(entries[0]["title"], "Teaching While Gamedev")
 
-    @patch("link2vid.core.extractors.requests.Session")
+    @patch("doggybag.core.extractors.requests.Session")
     def test_gdc_vault_unmapped_id_falls_back_to_id_derived_url(self, session_cls):
         _gdc_session(session_cls, {"schemaVersion": 1, "aliases": {}})
         entries = scan_direct_media_entries(GDC_PAGE_URL)
         self.assertEqual([entry["webpage_url"] for entry in entries], [GDC_LEGACY_URL])
 
-    @patch("link2vid.core.extractors.requests.Session")
+    @patch("doggybag.core.extractors.requests.Session")
     def test_gdc_vault_rejects_alias_outside_blazestreaming_cdn(self, session_cls):
         _gdc_session(
             session_cls,

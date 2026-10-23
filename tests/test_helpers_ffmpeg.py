@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import MagicMock, patch
 
-from link2vid.core.helpers import (
+from doggybag.core.helpers import (
     download_with_ffmpeg,
     parse_ffmpeg_progress_ms,
     parse_ffmpeg_time_seconds,
@@ -23,12 +23,12 @@ class TestFfmpegProgressParsing(unittest.TestCase):
 
 
 class TestDownloadWithFfmpeg(unittest.TestCase):
-    @patch("link2vid.core.helpers.os.path.isfile", return_value=True)
-    @patch("link2vid.core.helpers.os.path.getsize", return_value=1024)
-    @patch("link2vid.core.helpers.probe_media_duration", return_value=100.0)
-    @patch("link2vid.core.helpers.subprocess.CREATE_NO_WINDOW", 0x08000000, create=True)
-    @patch("link2vid.core.helpers.sys.platform", "win32")
-    @patch("link2vid.core.helpers.subprocess.Popen")
+    @patch("doggybag.core.helpers.os.path.isfile", return_value=True)
+    @patch("doggybag.core.helpers.os.path.getsize", return_value=1024)
+    @patch("doggybag.core.helpers.probe_media_duration", return_value=100.0)
+    @patch("doggybag.core.helpers.subprocess.CREATE_NO_WINDOW", 0x08000000, create=True)
+    @patch("doggybag.core.helpers.sys.platform", "win32")
+    @patch("doggybag.core.helpers.subprocess.Popen")
     def test_download_with_ffmpeg_uses_real_crlf_in_headers(
         self,
         popen_mock,
@@ -57,10 +57,10 @@ class TestDownloadWithFfmpeg(unittest.TestCase):
         self.assertIn("-progress", cmd)
         self.assertEqual(popen_mock.call_args.kwargs["creationflags"], 0x08000000)
 
-    @patch("link2vid.core.helpers.os.path.isfile", return_value=True)
-    @patch("link2vid.core.helpers.os.path.getsize", return_value=1024)
-    @patch("link2vid.core.helpers.probe_media_duration", return_value=100.0)
-    @patch("link2vid.core.helpers.subprocess.Popen")
+    @patch("doggybag.core.helpers.os.path.isfile", return_value=True)
+    @patch("doggybag.core.helpers.os.path.getsize", return_value=1024)
+    @patch("doggybag.core.helpers.probe_media_duration", return_value=100.0)
+    @patch("doggybag.core.helpers.subprocess.Popen")
     def test_download_with_ffmpeg_reports_progress(self, popen_mock, _duration, _size, _exists):
         proc = MagicMock()
         proc.stdout = iter(["out_time_ms=50000\n", "progress=end\n"])
@@ -78,10 +78,10 @@ class TestDownloadWithFfmpeg(unittest.TestCase):
         self.assertTrue(any(value >= 0.49 for value in seen))
         self.assertEqual(seen[-1], 1.0)
 
-    @patch("link2vid.core.helpers.os.path.isfile", return_value=True)
-    @patch("link2vid.core.helpers.os.path.getsize", return_value=1024)
-    @patch("link2vid.core.helpers.probe_media_duration", return_value=100.0)
-    @patch("link2vid.core.helpers.subprocess.Popen")
+    @patch("doggybag.core.helpers.os.path.isfile", return_value=True)
+    @patch("doggybag.core.helpers.os.path.getsize", return_value=1024)
+    @patch("doggybag.core.helpers.probe_media_duration", return_value=100.0)
+    @patch("doggybag.core.helpers.subprocess.Popen")
     def test_download_with_ffmpeg_audio_only_encodes_mp3(self, popen_mock, _duration, _size, _exists):
         proc = MagicMock()
         proc.stdout = iter(["out_time_ms=50000\n", "progress=end\n"])
@@ -101,9 +101,9 @@ class TestDownloadWithFfmpeg(unittest.TestCase):
         self.assertNotIn("copy", cmd)
         self.assertNotIn("aac_adtstoasc", cmd)
 
-    @patch("link2vid.core.helpers.os.path.isfile", return_value=False)
-    @patch("link2vid.core.helpers.probe_media_duration", return_value=None)
-    @patch("link2vid.core.helpers.subprocess.Popen")
+    @patch("doggybag.core.helpers.os.path.isfile", return_value=False)
+    @patch("doggybag.core.helpers.probe_media_duration", return_value=None)
+    @patch("doggybag.core.helpers.subprocess.Popen")
     def test_download_with_ffmpeg_raises_on_nonzero_exit(self, popen_mock, _duration, _exists):
         proc = MagicMock()
         proc.stdout = iter(["HTTP error 403 Forbidden\n"])
@@ -114,7 +114,7 @@ class TestDownloadWithFfmpeg(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ffmpeg failed"):
             download_with_ffmpeg("https://cdn.example.com/playlist.m3u8", "out.mp4")
 
-    @patch("link2vid.core.helpers.m3u8.load")
+    @patch("doggybag.core.helpers.m3u8.load")
     def test_probe_media_duration_sums_hls_segments(self, load_mock):
         segment = MagicMock(duration=120.0)
         playlist = MagicMock(is_variant=False, segments=[segment, segment])
@@ -124,9 +124,9 @@ class TestDownloadWithFfmpeg(unittest.TestCase):
 
         self.assertEqual(duration, 240.0)
 
-    @patch("link2vid.core.helpers.subprocess.CREATE_NO_WINDOW", 0x08000000, create=True)
-    @patch("link2vid.core.helpers.sys.platform", "win32")
-    @patch("link2vid.core.helpers.subprocess.run")
+    @patch("doggybag.core.helpers.subprocess.CREATE_NO_WINDOW", 0x08000000, create=True)
+    @patch("doggybag.core.helpers.sys.platform", "win32")
+    @patch("doggybag.core.helpers.subprocess.run")
     def test_probe_media_duration_hides_ffprobe_window(self, run_mock):
         run_mock.return_value = MagicMock(returncode=0, stdout="12.5\n")
 
