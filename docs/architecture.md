@@ -4,17 +4,21 @@ Current layout and data flow for the desktop app. For media discovery details (S
 
 ## Design decisions
 
-- **CustomTkinter** — kept the existing UI framework; refactored incrementally into components rather than rewriting.
-- **Core/UI split** — fetch and download logic live in `link2vid/core/`; the UI orchestrates and owns all dialogs and widget updates.
-- **Thread safety** — network, downloads, transcription, thumbnails, and Selenium run off the UI thread; workers communicate via `ui_queue` drained on the main thread.
+- **Python engine, web frontend** — yt-dlp, Faster Whisper, and Selenium are Python libraries, so the engine stays in Python. The UI is HTML/CSS/JS (Preact + htm, vendored, no build step) hosted in a native window by [pywebview](https://pywebview.flowrl.com/) (WebView2 on Windows). This replaced CustomTkinter, which could not deliver a modern look.
+- **Three layers** — `link2vid/core/` (fetch/download/transcribe, UI-agnostic), `link2vid/app/` (toolkit-neutral orchestration + view models), `link2vid/ui/` (pywebview host + `web/` frontend). See [ui-frontend.md](./ui-frontend.md) for the frontend.
+- **Python owns state** — view models publish JSON events; the page renders them and sends intents back. No business rules live in JavaScript.
+- **Thread safety** — one controller dispatcher thread owns all session state; network, downloads, transcription, and Selenium run on workers that hop back through `ui_queue`.
 
 ## Entry point
 
-- `video_downloader.py` — `main()` parses `--smoke`, calls `bootstrap_runtime()`, then lazy-imports the UI or runs headless import smoke.
+- `video_downloader.py` — `main()` parses `--smoke` / `--devtools`, calls `bootstrap_runtime()`, then lazy-imports `link2vid.ui.webview_app.run` or runs headless import smoke.
 - `link2vid/core/runtime.py` — frozen/dev `app_dir`, `developer.json` search order, optional `<app_dir>/bin` PATH prepend (entry-only; not imported from other core modules).
-- `link2vid/ui/main_window.py` — main window, fetch/download orchestration, UI event queue.
-- `link2vid/ui/components/` — `VideoCard`, `BatchBar`, `LogDrawer`, `FooterBar`.
-- `link2vid/ui/thumbnail_loader.py` — background thumbnail fetch/resize.
+- `link2vid/app/controller.py` — `AppController`: fetch/download/transcript/Whisper/batch orchestration, dialogs, diagnostics, the `ui_queue` dispatcher.
+- `link2vid/app/viewmodels.py` — `CardModel`, `BatchBarModel`, `FooterModel`, `UrlModel`, `LogModel`: state objects that replaced the old widgets and publish events.
+- `link2vid/app/view.py` — `ViewPort` protocol (events, dialogs, toasts, clipboard, file pickers) and a headless `NullView`.
+- `link2vid/app/desktop.py` — clipboard text, open/reveal files.
+- `link2vid/ui/webview_app.py` — `WebViewPresenter` (batches events into the page), `Bridge` (JS API), window setup and Windows title-bar theming.
+- `link2vid/ui/web/` — `index.html`, `styles.css`, `js/*.js`, `vendor/preact-htm.module.js`.
 
 Windows portable builds: `build_windows.bat` → `release/Link2Vid/`; launch via `Link2Vid.bat`. See [windows-packaging.md](./windows-packaging.md).
 
@@ -51,12 +55,12 @@ User URL
        4. scan_direct_media_entries (HTTP HTML)
        5. scan_direct_m3u8
        6. NeedsSelenium → UI prompts → selenium_fetch_media_entries
-  → UI renders VideoCard list (batched with Load more)
+  → controller publishes results + CardModel pages (40 at a time; the page requests more on scroll)
 ```
 
 Auth routing: when yt-dlp fails with a cookie/auth signal, `VideoFetcher` returns `NeedsSelenium` if the exception chain shows a login redirect (`Unsupported URL` to `/login`, `/users/login`, `/sign_in`, or `/sign-in`), if username+password were already supplied, or if the URL matches a configured `developer.json` credential domain. Unconfigured generic cookie failures still return `NeedsCookies` so the footer browser picker and automatic browser-cookie lookup remain the path for ordinary sites. Inspect the full exception chain — the final `CookiesRequiredError` message alone often loses the login redirect.
 
-Fetch runs off the UI thread via `ThreadPoolExecutor`. Results and logs reach widgets through `ui_queue` + `root.after`.
+Fetch runs off the dispatcher thread via `ThreadPoolExecutor`. Results and logs reach view models through `ui_queue`.
 
 ## Download flow
 
@@ -70,7 +74,7 @@ Output names use `sanitize_filename` + `unique_output_path` (collision suffix, n
 
 ## Batch selection and downloads
 
-`VideoDownloaderApp` owns fetched-entry selection and per-entry format/transcript choices, keyed by entry index for one fetch session. `VideoCard` checkboxes and menus are input/display only. This keeps selection authoritative across **Load more** without constructing every card; an unrendered entry uses the same session-default format as a newly rendered card.
+`AppController` owns fetched-entry selection and per-entry format/transcript choices, keyed by entry index for one fetch session. Card checkboxes and menus in the page are input/display only. This keeps selection authoritative across incremental rendering without constructing every card; an unrendered entry uses the same session-default format as a newly rendered card.
 
 At batch start the app freezes the selected entries' resolved URLs and choices. One daemon worker then calls the existing `download_video` or `download_transcript` runner sequentially, hopping to the UI thread for per-item pre-flight and widget state. Failures are counted and isolated, and **Stop** takes effect between items. Batch provider transcripts never invoke Whisper.
 
@@ -99,15 +103,18 @@ Model weights live at `%LOCALAPPDATA%\Link2Vid\models` (fallback `~/.link2vid/mo
 
 ## Threading and UI safety
 
-- Tk/CTk widgets are updated only on the main thread.
-- Background work: fetch, downloads, Whisper audio acquisition/transcription, thumbnails, Selenium.
-- Pattern: workers enqueue `(action, payload)` tuples; `process_ui_queue` drains them on the UI thread.
+- `AppController.run_forever` runs on a dedicated dispatcher thread (`main_thread_id`); only that thread mutates view models and session maps.
+- Background work: fetch, downloads, Whisper audio acquisition/transcription, Selenium. Thumbnails load in the WebView directly (`referrerpolicy="no-referrer"`).
+- Pattern: workers enqueue `(action, payload)` tuples; `process_ui_queue` drains them on the dispatcher thread. Page intents arrive on pywebview worker threads and are `post`ed onto the same queue.
+- Dialogs (`_ask`) block the calling thread until the page answers. On the dispatcher thread the queue keeps draining while a dialog is open, so progress and logs stay live.
+- `WebViewPresenter` coalesces events (latest `card` per key, latest `progress`/`batch`/`settings`) and flushes at most ~30 times per second via `window.L2V.receive(...)`.
 - Batch workers iterate frozen `BatchItem` values and never read live entry/selection maps.
 
 ## Local configuration
 
 - `developer.json` (gitignored) — optional `use_defaults`, `cookies_browser`, per-domain login credentials.
-- `%APPDATA%/Link2Vid/settings.json` — persisted footer cookie-browser preference.
+- `%APPDATA%/Link2Vid/settings.json` — persisted cookie-browser and cookies.txt preferences.
+- `%LOCALAPPDATA%/Link2Vid/webview` — WebView2 profile (page storage only).
 - **Dev mode:** resolved from cwd, then entry script directory, then `%APPDATA%/Link2Vid/`.
 - **Frozen (packaged) mode:** resolved from directory containing `Link2Vid.exe`, then `%APPDATA%/Link2Vid/`. Build may copy repo-root `developer.json` into `release/Link2Vid/`.
 - Credentials apply only when the fetch URL matches a configured domain (including subdomains).
@@ -119,6 +126,8 @@ Pure logic lives in `link2vid/core/` and is covered by `tests/`. Run from repo r
 ```bash
 python -m pytest tests/
 ```
+
+Controller and view-model behavior is covered headlessly (`tests/test_whisper_workflow.py`, `tests/test_batch_workflow.py`, `tests/test_viewmodels.py`, `tests/test_webview_bridge.py`); no WebView is needed to run the suite.
 
 Packaging contract tests: `tests/test_runtime.py`, `tests/test_packaging_contract.py`.
 

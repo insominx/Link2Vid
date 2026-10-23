@@ -1,6 +1,6 @@
 import unittest
 
-from link2vid.ui.main_window import ffmpeg_progress_display
+from link2vid.app.controller import ffmpeg_progress_display
 
 
 class TestFfmpegProgressDisplay(unittest.TestCase):

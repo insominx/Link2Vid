@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from link2vid.core import CookiesRequiredError, NoTranscriptAvailableError
-from link2vid.ui.main_window import BatchPromptPolicy, VideoDownloaderApp
+from link2vid.app.controller import BatchPromptPolicy, AppController
 
 
 class _UrlEntry:
@@ -35,13 +35,13 @@ class _BatchBar:
 
 def _bind(app, *names: str) -> None:
     for name in names:
-        setattr(app, name, getattr(VideoDownloaderApp, name).__get__(app))
+        setattr(app, name, getattr(AppController, name).__get__(app))
 
 
 class BatchHarness(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.app = object.__new__(VideoDownloaderApp)
+        self.app = object.__new__(AppController)
         self.app.main_thread_id = threading.get_ident()
         self.app.video_entries = [
             {"title": "One", "url": "https://example.com/one"},
@@ -244,7 +244,7 @@ class BatchHarness(unittest.TestCase):
         self.assertEqual(self.app.ui_choose_cookies_browser.call_count, 1)
 
     def _make_run(self, kind, items, skipped, default_count):
-        from link2vid.ui.main_window import BatchRun
+        from link2vid.app.controller import BatchRun
         run = BatchRun(kind, items, self.app.entries_generation, self.tmp.name)
         run.skipped = skipped
         run.default_format_count = default_count
@@ -257,7 +257,7 @@ class BatchHarness(unittest.TestCase):
 class RunnerReturnTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
-        self.app = object.__new__(VideoDownloaderApp)
+        self.app = object.__new__(AppController)
         self.app.main_thread_id = threading.get_ident()
         self.app.download_manager = mock.Mock()
         self.app.batch_prompt_policy = None

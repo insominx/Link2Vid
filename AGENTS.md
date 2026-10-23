@@ -30,6 +30,7 @@ Stable, public engineering docs under `docs/` that describe product behavior or 
 - [docs/INDEX.md](docs/INDEX.md) — doc map
 - [docs/architecture.md](docs/architecture.md) — current module layout and fetch/download flow
 - [docs/media-discovery-pipeline.md](docs/media-discovery-pipeline.md) — Selenium candidate collapse, filenames
+- [docs/ui-frontend.md](docs/ui-frontend.md) — web frontend, event protocol, mock backend
 - [docs/agent-playbook-external-integrations.md](docs/agent-playbook-external-integrations.md) — patterns for external-site / downloader reliability work
 - [docs/cookie-js-troubleshooting.md](docs/cookie-js-troubleshooting.md) — cookie, JS runtime, yt-dlp, and ffmpeg troubleshooting
 - [docs/verification-checklist.md](docs/verification-checklist.md) — manual regression checklist
@@ -54,7 +55,10 @@ Focused runs while iterating:
 python -m pytest tests/test_selenium_fallback.py
 python -m pytest tests/test_fetcher.py
 python -m pytest tests/test_ui_progress.py
+python -m pytest tests/test_viewmodels.py tests/test_webview_bridge.py
 ```
+
+Frontend-only iteration: serve `link2vid/ui/web/` with any static server and open `index.html?mock` (see [docs/ui-frontend.md](docs/ui-frontend.md)).
 
 Rules when interpreting results:
 
@@ -68,7 +72,8 @@ Rules when interpreting results:
 | Area | Role |
 |---|---|
 | `link2vid/core/` | Fetch, extract, download, Selenium fallback, diagnostics |
-| `link2vid/ui/` | CustomTkinter UI |
+| `link2vid/app/` | Toolkit-neutral controller, view models, `ViewPort` |
+| `link2vid/ui/` | pywebview host (`webview_app.py`) and the HTML/CSS/JS frontend (`web/`) |
 | `tests/` | Unit tests |
 | `video_downloader.py` | Application entry point |
 

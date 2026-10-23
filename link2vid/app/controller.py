@@ -1,8 +1,14 @@
+"""Toolkit-neutral application controller.
+
+Owns fetch/download/transcript/Whisper orchestration. A single dispatcher
+thread (``main_thread_id``) is the only mutator of session maps and view
+models; workers hop onto it through ``ui_queue``. The frontend talks to the
+controller through ``post`` and renders the events its view models emit.
+"""
+
 from __future__ import annotations
 
-import customtkinter as ctk
-from tkinter import TclError, filedialog, messagebox
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 import math
 import threading
@@ -16,9 +22,10 @@ import tempfile
 import uuid
 from pathlib import Path
 from urllib.parse import urlparse
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from ..core.cookie_prefs import (
+    COOKIE_BROWSERS,
+    COOKIE_BROWSER_LABELS,
     cookies_browser_label,
     load_preferred_cookies_browser,
     load_preferred_cookies_path,
@@ -65,15 +72,8 @@ from ..core import (
 )
 from ..core.extractors import build_media_entries, title_from_page_url
 from ..core.runtime import model_cache_dir
-from .components import (
-    BatchBar,
-    FooterBar,
-    LogDrawer,
-    VideoCard,
-    prompt_cookie_browser,
-    prompt_credentials,
-)
-from .thumbnail_loader import ThumbnailLoader
+from .view import NullView, ViewPort
+from .viewmodels import BatchBarModel, CardModel, FooterModel, LogModel, UrlModel, log_level
 
 # Card status labels for Whisper phases (unknown-duration work stays indeterminate).
 _WHISPER_PHASE_STATUS = {
@@ -95,9 +95,6 @@ _WHISPER_INDETERMINATE_PHASES = frozenset(
         WhisperPhase.WRITING,
     }
 )
-
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
 
 
 @dataclass
@@ -175,18 +172,65 @@ class YtDlpLogger:
         self.app.log(f"[yt-dlp] {msg}")
 
 
-class VideoDownloaderApp:
+def site_label(url: str | None) -> str | None:
+    if not url:
+        return None
+    host = (urlparse(url).hostname or "").strip()
+    if host.startswith("www."):
+        host = host[4:]
+    return host or None
+
+
+def _site_name(entry: dict) -> str | None:
+    site = entry.get("extractor_key") or entry.get("extractor")
+    if site and str(site).lower() not in ("generic", "html5mediaembed"):
+        return str(site).replace("_", " ").title().replace("Youtube", "YouTube")
+    url = entry.get("webpage_url") or entry.get("url") or ""
+    host = urlparse(str(url)).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return host or None
+
+
+def _http_url(value) -> str | None:
+    if isinstance(value, str) and value.startswith(("http://", "https://")):
+        return value
+    return None
+
+
+def entry_details(entry: dict) -> dict:
+    """JSON-safe display fields for one fetched entry."""
+    uploader = (
+        entry.get("uploader")
+        or entry.get("channel")
+        or entry.get("uploader_id")
+        or entry.get("channel_id")
+    )
+    thumbnail = entry.get("thumbnail") or entry.get("thumbnail_url")
+    thumbnails = entry.get("thumbnails")
+    if not thumbnail and isinstance(thumbnails, list) and thumbnails:
+        last = thumbnails[-1]
+        if isinstance(last, dict):
+            thumbnail = last.get("url")
+    return {
+        "site": _site_name(entry),
+        "duration": format_duration_text(entry.get("duration")),
+        "uploader": str(uploader) if uploader else None,
+        "thumbnail": _http_url(thumbnail),
+        "webpage_url": _http_url(entry.get("webpage_url") or entry.get("original_url")),
+        "direct": bool(entry.get("_ffmpeg_headers")),
+    }
+
+
+class AppController:
     def __init__(
         self,
-        root,
+        view: ViewPort | None = None,
         *,
         whisper_service: WhisperService | None = None,
         audio_source_resolver: AudioSourceResolver | None = None,
     ):
-        self.root = root
-        self.root.title('Video Downloader (Cards UI)')
-        self.root.geometry('1100x800')
-        self.root.minsize(900, 700)
+        self.view = view if view is not None else NullView()
         self.video_entries = []
         self.entries_generation = 0
         self.cards = []
@@ -222,23 +266,14 @@ class VideoDownloaderApp:
         self.executor = ThreadPoolExecutor(max_workers=4)
         self.fetch_future = None
         self.is_fetching = False
-        self.batch_size = 20
+        self.batch_size = 40
         self.rendered_count = 0
-        self.thumbnail_size = (120, 72)
-        self.thumbnail_styles = {
-            "site_a": ("Site", ("#1f2937", "#0ea5e9")),
-            "site_b": ("Video", ("#312e81", "#22c55e")),
-            "site_c": ("Media", ("#4b5563", "#f59e0b")),
-            "default": ("Video", ("#4b5563", "#9ca3af")),
-        }
-        self.placeholder_cache = {}
-        self.placeholder_font = None
         self.busy_cards = set()
-        # Main-thread/session map: exact verified media for Whisper reuse (Phase 2B).
-        # Only process_ui_queue / main-thread helpers mutate this; workers enqueue events.
+        # Dispatcher-thread session map: exact verified media for Whisper reuse.
+        # Only process_ui_queue / dispatcher helpers mutate this; workers enqueue events.
         self.verified_media_by_card: dict = {}
         self._verified_media_epoch_by_card: dict = {}
-        # Whisper session state (Phase 2C1). Maps mutate only via the UI queue consumer.
+        # Whisper session state. Maps mutate only via the UI queue consumer.
         self.whisper_runs_by_card: dict = {}
         self.whisper_request_id_by_card: dict = {}
         self.latest_whisper_card = None
@@ -246,8 +281,11 @@ class VideoDownloaderApp:
         # Serialize the interactive selection plus immediate retry so two
         # Whisper workers cannot apply each other's app-global cookies path.
         self._whisper_cookie_retry_lock = threading.Lock()
+        self._stopped = threading.Event()
         self.output_path = self.get_default_output_path()
         self.cookies_path = load_preferred_cookies_path(dev_defaults=self.dev_defaults)
+        if self.dev_defaults.get('cookies_path'):
+            self.cookies_path = self.dev_defaults.get('cookies_path')
         self.ydl_logger = YtDlpLogger(self)
         self.download_manager = DownloadManager(
             ydl_logger=self.ydl_logger,
@@ -269,89 +307,17 @@ class VideoDownloaderApp:
             log=self.log,
             dev_defaults=self.dev_defaults,
         )
-        self.thumbnail_loader = ThumbnailLoader(self.executor, log=self.log)
 
-        font_big = ("Arial", 22)
-        font_med = ("Arial", 16)
-        font_small = ("Consolas", 12)
-
-        main_frame = ctk.CTkFrame(root)
-        main_frame.pack(fill="both", expand=True, padx=24, pady=24)
-
-        header = ctk.CTkFrame(main_frame, fg_color="transparent")
-        header.pack(fill="x", pady=(0, 12))
-        ctk.CTkLabel(header, text="Link2Vid", font=("Arial", 24, "bold")).pack(anchor="w")
-
-        action_bar = ctk.CTkFrame(main_frame)
-        action_bar.pack(fill="x", pady=(0, 16))
-        self.url_entry = ctk.CTkEntry(
-            action_bar,
-            font=font_med,
-            placeholder_text="Paste a video or playlist URL…",
-        )
-        self.url_entry.pack(side="left", fill="x", expand=True, padx=(0, 12), pady=10)
-        self.url_entry.bind('<KeyRelease>', self.update_button_states)
-        self.url_entry.bind('<Return>', lambda _event: self.fetch_videos())
-        self.fetch_btn = ctk.CTkButton(
-            action_bar,
-            text='Fetch',
-            command=self.fetch_videos,
-            font=font_med,
-            height=36,
-            width=140,
-            state="disabled",
-        )
-        self.fetch_btn.pack(side="right", padx=(0, 10))
-
-        self.results_frame = ctk.CTkFrame(main_frame)
-        self.results_frame.pack(fill="both", expand=True, pady=(0, 16))
-        self.results_scroll = ctk.CTkScrollableFrame(self.results_frame)
-        self.results_scroll.pack(fill="both", expand=True, padx=6, pady=6)
-        self.results_state = ctk.CTkLabel(
-            self.results_scroll,
-            text="Paste a URL and fetch results.",
-            font=font_med,
-        )
-        self.results_state.pack(pady=16)
-        self.load_more_button = ctk.CTkButton(
-            self.results_scroll,
-            text="Load more",
-            command=self.load_more,
-            height=32,
-        )
-
-        self.batch_bar = BatchBar(
-            main_frame,
-            on_select_all=self.select_all_entries,
-            on_select_none=self.select_no_entries,
-            on_download_selected=self.start_batch_media,
-            on_transcript_selected=self.start_batch_transcript,
-            on_cancel=self.cancel_batch,
-        )
-        self.batch_bar.pack_forget()
-
-        if self.dev_defaults.get('cookies_path'):
-            self.cookies_path = self.dev_defaults.get('cookies_path')
-
-        self.progress = ctk.DoubleVar()
-        self.progress_bar = ctk.CTkProgressBar(main_frame, variable=self.progress, height=12)
-        self.progress_bar.pack(fill="x", pady=(0, 12))
-        self.progress_bar.set(0)
-
-        self.footer = FooterBar(
-            main_frame,
+        emit = self.view.emit
+        self.url_entry = UrlModel(emit)
+        self.batch_bar = BatchBarModel(emit)
+        self.footer = FooterModel(
             output_path=self.output_path,
             cookies_browser=self.cookies_browser,
             cookies_path=self.cookies_path,
-            on_change_output=self.browse_folder,
-            on_change_cookies_browser=self.set_cookies_browser,
-            on_change_cookies_path=self.browse_cookies,
-            on_copy_diagnostics=self.copy_diagnostics,
+            emit=emit,
         )
-        self.footer.pack(fill="x", pady=(0, 8))
-
-        self.log_drawer = LogDrawer(main_frame, collapsed=True)
-        self.log_drawer.pack(fill="x")
+        self.log_drawer = LogModel(emit)
 
         from ..core.runtime import startup_summary
 
@@ -364,33 +330,77 @@ class VideoDownloaderApp:
         )
 
         if self.dev_defaults.get('use_defaults') and self.dev_defaults.get('default_url'):
-            self.url_entry.insert(0, self.dev_defaults['default_url'])
+            self.url_entry.set(self.dev_defaults['default_url'])
         else:
             self._populate_url_from_clipboard_if_valid()
 
-        self.root.after(100, self.process_ui_queue)
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.update_button_states()
         self.log(f"yt-dlp version: {get_yt_dlp_version()}")
         self.check_ffmpeg()
         self.check_js_runtime()
         self._probe_whisper_models()
         self.log(
-            "Tip: Link2Vid reads cookies from the browser chosen in the footer. "
+            "Tip: Link2Vid reads cookies from the browser chosen in the status bar. "
             f"Current source: {cookies_browser_label(self.cookies_browser)}."
         )
 
+    def boot_state(self) -> dict:
+        """Everything the frontend needs to render before the first event."""
+        return {
+            "url": self.url_entry.get(),
+            "formats": [
+                {"id": opt["format"], "label": opt["label"]} for opt in self.format_options
+            ],
+            "whisper_models": list(self.whisper_models),
+            "cookie_browsers": [
+                {"id": name, "label": COOKIE_BROWSER_LABELS[name]} for name in COOKIE_BROWSERS
+            ],
+            "settings": self.footer.state(),
+            "batch": self.batch_bar.state(),
+            "fetching": self.is_fetching,
+            "health": self.health_state(),
+            "log": [
+                {"time": "", "level": log_level(line), "text": line}
+                for line in self.log_history[-self.log_max:]
+            ],
+            "debug_log_path": self.debug_log_path,
+        }
+
+    def health_state(self) -> dict:
+        return {
+            "yt_dlp": get_yt_dlp_version(),
+            "ffmpeg": bool(getattr(self, "ffmpeg_available", False)),
+            "js_runtimes": list(getattr(self, "js_runtimes", []) or []),
+            "whisper_models": len(self.whisper_models),
+        }
+
     def _populate_url_from_clipboard_if_valid(self) -> None:
+        url = self.clipboard_url()
+        if url:
+            self.url_entry.set(url)
+
+    def clipboard_url(self) -> str | None:
         try:
-            self.root.update_idletasks()
-            clip = self.root.clipboard_get()
-        except TclError:
-            return
-        url = url_from_clipboard_text(clip)
-        if not url:
-            return
-        self.url_entry.delete(0, "end")
-        self.url_entry.insert(0, url)
+            clip = self.view.get_clipboard()
+        except Exception:
+            return None
+        return url_from_clipboard_text(clip) if clip else None
+
+    # ──────────────────────────────────────────────────────────
+    # Dispatcher thread
+    # ──────────────────────────────────────────────────────────
+    def post(self, func) -> None:
+        """Run ``func`` on the dispatcher thread without waiting."""
+        self.ui_queue.put(("call", func))
+
+    def run_forever(self) -> None:
+        """Become the dispatcher thread and drain events until ``stop``."""
+        self.main_thread_id = threading.get_ident()
+        while not self._stopped.is_set():
+            self.process_ui_queue(timeout=0.1)
+
+    def stop(self) -> None:
+        self._stopped.set()
 
     # ──────────────────────────────────────────────────────────
     # Utility / Logging
@@ -402,7 +412,7 @@ class VideoDownloaderApp:
         if len(self.log_history) > self.log_max:
             self.log_history = self.log_history[-self.log_max:]
         self._append_debug_log(message)
-        if hasattr(self, "log_drawer"):
+        if getattr(self, "log_drawer", None) is not None:
             self.log_drawer.append(message)
 
     def _default_debug_log_path(self) -> str:
@@ -444,37 +454,79 @@ class VideoDownloaderApp:
             raise result["error"]
         return result.get("value")
 
+    def _ask(self, kind: str, payload: dict):
+        """Open a frontend dialog and block the caller until it is answered.
+
+        On the dispatcher thread the queue keeps draining while the dialog is
+        open (like a modal event loop) so progress and logs stay live.
+        """
+        future: Future = self.view.request(kind, payload)
+        if threading.get_ident() == self.main_thread_id:
+            while not future.done():
+                self.process_ui_queue(timeout=0.05)
+        return future.result()
+
     def ui_confirm(self, title: str, message: str) -> bool:
-        return bool(self.run_on_ui_thread(lambda: messagebox.askyesno(title, message)))
+        return bool(
+            self._ask(
+                "confirm",
+                {"title": title, "message": message, "confirm": "Continue", "cancel": "Not now"},
+            )
+        )
 
     def ui_ffmpeg_fallback(self, fmt_label: str) -> str:
-        message = (
-            f"ffmpeg is required to merge audio/video for '{fmt_label}'.\n\n"
-            "Yes: Switch to 'Best' (single file, most compatible)\n"
-            "No: Continue anyway (may fail or be video-only)\n"
-            "Cancel: Abort download."
+        answer = self._ask(
+            "choice",
+            {
+                "title": "ffmpeg is missing",
+                "message": (
+                    f"Merging audio and video for '{fmt_label}' needs ffmpeg, "
+                    "which Link2Vid could not find."
+                ),
+                "options": [
+                    {
+                        "id": "fallback",
+                        "label": "Use best single file",
+                        "detail": "Most compatible; may be lower quality",
+                        "primary": True,
+                    },
+                    {
+                        "id": "continue",
+                        "label": "Continue anyway",
+                        "detail": "May fail or save video without audio",
+                    },
+                ],
+            },
         )
-        result = self.run_on_ui_thread(lambda: messagebox.askyesnocancel("ffmpeg missing", message))
-        if result is None:
-            return "cancel"
-        if result:
-            return "fallback"
-        return "continue"
+        return answer if answer in ("fallback", "continue") else "cancel"
+
+    def _suggested_cookies_browser(self) -> str | None:
+        if self.cookies_browser is not None:
+            return self.cookies_browser
+        try:
+            detected = self.download_manager._running_browsers()
+        except Exception:
+            detected = []
+        if isinstance(detected, (list, tuple)):
+            running = [item for item in detected if isinstance(item, str)]
+            if running:
+                return running[0]
+        return None
 
     def ui_choose_cookies_browser(self) -> str | None:
-        suggested = self.cookies_browser
-        if suggested is None:
-            running = []
-            try:
-                detected = self.download_manager._running_browsers()
-            except Exception:
-                detected = []
-            if isinstance(detected, (list, tuple)) and detected:
-                running = [item for item in detected if isinstance(item, str)]
-            suggested = running[0] if running else None
-        return self.run_on_ui_thread(
-            lambda: prompt_cookie_browser(self.root, suggested=suggested)
+        answer = self._ask(
+            "cookie_browser",
+            {
+                "title": "This site wants you signed in",
+                "message": (
+                    "Link2Vid can borrow your login cookies from a browser. "
+                    "Pick the one you use for this site; Link2Vid remembers it. "
+                    "Close that browser first if it is running."
+                ),
+                "suggested": self._suggested_cookies_browser(),
+            },
         )
+        return normalize_cookies_browser(answer) if answer else None
 
     def choose_cookies_browser(self) -> str | None:
         policy = self.batch_prompt_policy
@@ -515,7 +567,7 @@ class VideoDownloaderApp:
             self.log(
                 f"Could not read cookies from {cookies_browser_label(self.cookies_browser)}. "
                 "Close that browser (including background processes) and retry, "
-                "or change Cookies in the footer."
+                "or change Cookies in the status bar."
             )
             return False
         chosen = self.choose_cookies_browser()
@@ -554,15 +606,20 @@ class VideoDownloaderApp:
             return policy.ffmpeg_answer
 
     def ui_warn(self, title: str, message: str) -> None:
-        self.run_on_ui_thread(lambda: messagebox.showwarning(title, message))
+        """Non-blocking notice; the frontend shows it as a toast."""
+        self.view.notify("warning", title, message)
 
-    def ui_offer_copy_diagnostics(self) -> bool:
+    def ui_error_guidance(self, title: str, message: str) -> bool:
+        """Explain a known failure. Returns True when the user wants diagnostics."""
         return bool(
-            self.run_on_ui_thread(
-                lambda: messagebox.askyesno(
-                    "Copy Diagnostics",
-                    "Copy Link2Vid diagnostics to the clipboard now?",
-                )
+            self._ask(
+                "guidance",
+                {
+                    "title": title,
+                    "message": message,
+                    "confirm": "Copy diagnostics",
+                    "cancel": "Close",
+                },
             )
         )
 
@@ -573,63 +630,71 @@ class VideoDownloaderApp:
             self.set_cookies_browser(chosen)
 
     def ui_prompt_for_credentials(self, url: str, *, browser_automation: bool = True):
-        return self.run_on_ui_thread(
-            lambda: self.prompt_for_credentials(url, browser_automation=browser_automation)
-        )
+        return self.prompt_for_credentials(url, browser_automation=browser_automation)
 
-    def process_ui_queue(self):
-        try:
-            while True:
-                action, payload = self.ui_queue.get_nowait()
-                if action == "call":
-                    payload()
-                elif action == "log":
-                    self._append_log(payload)
-                elif action == "progress":
-                    self.progress.set(payload)
-                    self.progress_bar.set(payload)
-                elif action == "results":
-                    self.video_entries = self._sanitize_entries(payload)
-                    self.entries_generation += 1
-                    self.populate_cards()
-                elif action == "results_state":
-                    self.set_results_state(payload)
-                elif action == "card_status":
-                    card, status, state = payload
-                    card.set_status(status, state=state)
-                elif action == "card_progress":
-                    card, value = payload
-                    card.set_progress(value)
-                elif action == "card_busy":
-                    card, busy = payload
-                    self._set_card_busy(card, busy)
-                elif action == "verified_media":
-                    self._apply_verified_media_event(payload)
-                elif action in (
-                    "whisper_snapshot",
-                    "card_progress_mode",
-                    "whisper_card_progress",
-                    "whisper_status",
-                    "whisper_busy",
-                ):
-                    self._consume_whisper_ui_event(action, payload)
-                elif action == "fetch_done":
-                    self.is_fetching = False
-                    self.update_button_states()
-                elif action == "thumbnail":
-                    card, image = payload
-                    if not card.winfo_exists():
-                        continue
-                    if image is not None:
-                        card.set_thumbnail_image(image)
-                    else:
-                        entry = self.card_entries.get(card)
-                        source_label = self.get_source_label(entry) if entry else "default"
-                        placeholder = self.get_placeholder_image(source_label)
-                        card.set_thumbnail_image(self.make_ctk_image(placeholder))
-        except queue.Empty:
-            pass
-        self.root.after(100, self.process_ui_queue)
+    def process_ui_queue(self, timeout: float | None = None):
+        """Drain queued events on the dispatcher thread.
+
+        With ``timeout`` the first read blocks up to that long, so a loop can
+        idle without spinning. Without it, drains whatever is queued now.
+        """
+        block = timeout is not None
+        while True:
+            try:
+                if block:
+                    action, payload = self.ui_queue.get(timeout=timeout)
+                    block = False
+                else:
+                    action, payload = self.ui_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._apply_ui_event(action, payload)
+            except Exception as exc:
+                self._log_whisper_safely(
+                    f"Dropped {action} event ({type(exc).__name__}: {exc})."
+                )
+
+    def _apply_ui_event(self, action, payload) -> None:
+        if action == "call":
+            payload()
+        elif action == "log":
+            self._append_log(payload)
+        elif action == "progress":
+            self.set_progress(payload)
+        elif action == "results":
+            self.video_entries = self._sanitize_entries(payload)
+            self.entries_generation += 1
+            self.populate_cards()
+        elif action == "results_state":
+            self.set_results_state(payload)
+        elif action == "card_status":
+            card, status, state = payload
+            card.set_status(status, state=state)
+        elif action == "card_progress":
+            card, value = payload
+            card.set_progress(value)
+        elif action == "card_outputs":
+            card, paths = payload
+            if self._card_in_session(card):
+                card.set_outputs(paths)
+        elif action == "card_busy":
+            card, busy = payload
+            self._set_card_busy(card, busy)
+        elif action == "verified_media":
+            self._apply_verified_media_event(payload)
+        elif action in (
+            "whisper_snapshot",
+            "card_progress_mode",
+            "whisper_card_progress",
+            "whisper_status",
+            "whisper_busy",
+            "whisper_outputs",
+        ):
+            self._consume_whisper_ui_event(action, payload)
+        elif action == "fetch_done":
+            self.is_fetching = False
+            self.update_button_states()
 
     def _probe_whisper_models(self) -> None:
         """Lazily probe exact Faster Whisper aliases; never download or load a model.
@@ -687,6 +752,8 @@ class VideoDownloaderApp:
                 self._apply_whisper_status_event(payload)
             elif action == "whisper_busy":
                 self._apply_whisper_busy_event(payload)
+            elif action == "whisper_outputs":
+                self._apply_whisper_outputs_event(payload)
         except Exception as exc:
             self._log_whisper_safely(
                 f"Dropped {action} event after widget/session failure "
@@ -700,7 +767,7 @@ class VideoDownloaderApp:
         if not any(session_card is card for session_card in self.card_entries):
             return False
         try:
-            if not card.winfo_exists():
+            if not card.is_alive():
                 return False
         except Exception as exc:
             self._log_whisper_safely(
@@ -796,6 +863,25 @@ class VideoDownloaderApp:
             return
         self._set_card_busy(card, bool(busy))
 
+    def _apply_whisper_outputs_event(self, payload) -> None:
+        """Attach a finished run's transcript files to its card (request-aware)."""
+        try:
+            card, request_id, paths = payload
+        except (TypeError, ValueError):
+            return
+        if not self._whisper_event_is_current(card, request_id):
+            return
+        setter = getattr(card, "set_outputs", None)
+        if callable(setter):
+            setter([str(path) for path in paths])
+
+    def queue_whisper_outputs(self, card, request_id: str, paths) -> None:
+        payload = (card, request_id, tuple(paths))
+        if threading.get_ident() != self.main_thread_id:
+            self.ui_queue.put(("whisper_outputs", payload))
+            return
+        self._consume_whisper_ui_event("whisper_outputs", payload)
+
     def queue_whisper_snapshot(self, card, request_id: str, snapshot: WhisperRunSnapshot) -> None:
         """Enqueue or apply an immutable Whisper run snapshot for a card."""
         payload = (card, request_id, snapshot)
@@ -863,7 +949,7 @@ class VideoDownloaderApp:
         ):
             return False
         try:
-            return bool(card.winfo_exists())
+            return bool(card.is_alive())
         except Exception:
             return False
 
@@ -923,8 +1009,7 @@ class VideoDownloaderApp:
         if threading.get_ident() != self.main_thread_id:
             self.ui_queue.put(("progress", value))
             return
-        self.progress.set(value)
-        self.progress_bar.set(value)
+        self.view.emit("progress", {"value": round(value, 4)})
 
     def queue_results_state(self, text: str):
         if threading.get_ident() != self.main_thread_id:
@@ -945,8 +1030,18 @@ class VideoDownloaderApp:
             return
         card.set_progress(value)
 
+    def queue_card_outputs(self, card, paths) -> None:
+        """Attach saved files to a card so the UI can open or reveal them."""
+        if card is None or not callable(getattr(card, "set_outputs", None)):
+            return
+        payload = (card, tuple(str(path) for path in paths))
+        if threading.get_ident() != self.main_thread_id:
+            self.ui_queue.put(("card_outputs", payload))
+            return
+        card.set_outputs(payload[1])
+
     def _set_card_busy(self, card, busy: bool):
-        if not card or not card.winfo_exists():
+        if not card or not card.is_alive():
             return
         if busy:
             self.busy_cards.add(card)
@@ -985,8 +1080,7 @@ class VideoDownloaderApp:
         if key in self.shown_error_guidance:
             return
         self.shown_error_guidance.add(key)
-        self.ui_warn(title, message)
-        if self.ui_offer_copy_diagnostics():
+        if self.ui_error_guidance(title, message):
             self.run_on_ui_thread(self.copy_diagnostics)
 
     def check_ffmpeg(self):
@@ -1019,7 +1113,7 @@ class VideoDownloaderApp:
         if not any(session_card is card for session_card in self.card_entries):
             return None
         try:
-            if not card.winfo_exists():
+            if not card.is_alive():
                 return None
         except Exception:
             return None
@@ -1073,18 +1167,21 @@ class VideoDownloaderApp:
             log_history=self.log_history,
             whisper=self._latest_whisper_diagnostics_input(),
         )
-        self.root.clipboard_clear()
-        self.root.clipboard_append("\n".join(lines))
+        copied = self.view.set_clipboard("\n".join(lines))
+        if copied is False:
+            self.log("Could not copy diagnostics to the clipboard.")
+            self.view.notify("error", "Could not copy diagnostics")
+            return
         self.log("Diagnostics copied to clipboard.")
+        self.view.notify("success", "Diagnostics copied", "Paste them into a bug report or chat.")
 
     def update_button_states(self, event=None):
         url = self.url_entry.get().strip()
         has_url = bool(url)
         has_folder = bool(self.output_path)
-        fetch_state = "disabled" if self.is_fetching or not has_url else "normal"
-        self.fetch_btn.configure(
-            state=fetch_state,
-            text="Fetching..." if self.is_fetching else "Fetch",
+        self.view.emit(
+            "fetching",
+            {"busy": self.is_fetching, "can_fetch": has_url and not self.is_fetching},
         )
         self.update_card_buttons(has_folder)
         if hasattr(self, "batch_bar"):
@@ -1093,15 +1190,20 @@ class VideoDownloaderApp:
     # ──────────────────────────────────────────────────────────
     # Core flow
     # ──────────────────────────────────────────────────────────
-    def fetch_videos(self):
+    def fetch_videos(self, url: str | None = None):
         if self.is_fetching:
             return
-        url = self.url_entry.get().strip()
+        if url is not None:
+            self.url_entry.set(url, publish=False)
+        raw_url = self.url_entry.get()
+        url = raw_url.strip()
         # Normalize and trim URL text before fetch.
         norm_url = normalize_url(url)
         if norm_url != url:
             self.log(f"Using URL: {norm_url}")
             url = norm_url
+        if url != raw_url:
+            self.url_entry.set(url)
         self.last_url = url
         if not url:
             self.ui_warn("Input Error", "Please enter a URL.")
@@ -1246,9 +1348,8 @@ class VideoDownloaderApp:
         self.whisper_request_id_by_card.clear()
         self.latest_whisper_card = None
         self.rendered_count = 0
-        if self.load_more_button.winfo_manager():
-            self.load_more_button.pack_forget()
-        self.batch_bar.pack_forget()
+        self.view.emit("results_reset", {})
+        self.batch_bar.hide()
 
     def _sanitize_entries(self, entries) -> list[dict]:
         raw_entries = list(entries or [])
@@ -1260,29 +1361,28 @@ class VideoDownloaderApp:
         return sanitized
 
     def set_results_state(self, text: str):
-        if text:
-            self.results_state.configure(text=text)
-            if not self.results_state.winfo_manager():
-                self.results_state.pack(pady=16)
-        else:
-            if self.results_state.winfo_manager():
-                self.results_state.pack_forget()
+        self.view.emit("results_state", {"text": text or ""})
 
     def format_duration(self, duration):
         return format_duration_text(duration)
 
-    def build_metadata(self, entry):
-        parts = []
-        site = entry.get('extractor_key') or entry.get('extractor')
-        if site:
-            parts.append(site.replace('_', ' ').title())
-        duration = self.format_duration(entry.get('duration'))
-        if duration:
-            parts.append(duration)
-        uploader = entry.get('uploader') or entry.get('channel') or entry.get('uploader_id') or entry.get('channel_id')
-        if uploader:
-            parts.append(uploader)
-        return " · ".join(parts)
+    def _collection_title(self) -> str | None:
+        """Playlist name, or the one channel every entry shares."""
+        entries = self.video_entries
+        if len(entries) < 2:
+            return None
+        for key in ("playlist_title", "playlist"):
+            for entry in entries[:5]:
+                value = entry.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        for key in ("channel", "uploader"):
+            values = {entry.get(key) for entry in entries}
+            if len(values) == 1:
+                value = values.pop()
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return None
 
     def populate_cards(self):
         self.clear_results()
@@ -1293,7 +1393,16 @@ class VideoDownloaderApp:
         self.selected_entry_indexes = set(range(len(self.video_entries)))
         self.entry_format_by_index.clear()
         self.entry_transcript_by_index.clear()
-        self.batch_bar.pack(fill="x", pady=(0, 12), before=self.results_frame)
+        self.view.emit(
+            "results",
+            {
+                "generation": self.entries_generation,
+                "total": len(self.video_entries),
+                "collection": self._collection_title(),
+            },
+        )
+        if len(self.video_entries) > 1:
+            self.batch_bar.show()
         self._refresh_batch_bar()
         self.set_results_state("")
         self.render_next_batch()
@@ -1302,20 +1411,17 @@ class VideoDownloaderApp:
     def render_next_batch(self):
         if not self.video_entries:
             return
-        if self.load_more_button.winfo_manager():
-            self.load_more_button.pack_forget()
-
         start = self.rendered_count
         end = min(start + self.batch_size, len(self.video_entries))
+        added = []
         for index, entry in enumerate(self.video_entries[start:end], start=start):
-            title = entry.get('title', 'No Title')
-            metadata = self.build_metadata(entry)
-            source_label = self.get_source_label(entry)
+            title = entry.get('title') or 'Untitled'
             transcript_options = self.get_transcript_options(entry)
-            card = VideoCard(
-                self.results_scroll,
+            card = CardModel(
+                index=index,
+                generation=self.entries_generation,
                 title=title,
-                metadata=metadata,
+                details=entry_details(entry),
                 format_options=self.format_options,
                 transcript_options=transcript_options,
                 whisper_models=self.whisper_models,
@@ -1326,23 +1432,25 @@ class VideoDownloaderApp:
                 on_selection_change=self.handle_card_selection_change,
                 on_format_change=self.handle_card_format_change,
                 on_transcript_change=self.handle_card_transcript_change,
+                emit=self.view.emit,
             )
-            card.pack(fill="x", padx=8, pady=8)
-            if transcript_options == []:
-                card.set_status("No transcript tracks", state="ready")
             self.cards.append(card)
             self.card_entries[card] = entry
             self.card_index_by_card[card] = index
             self.card_by_index[index] = card
-            placeholder = self.get_placeholder_image(source_label)
-            card.set_thumbnail_image(self.make_ctk_image(placeholder))
-            self.queue_thumbnail(card, entry, source_label)
+            added.append(card)
 
         self.rendered_count = end
-        if self.rendered_count < len(self.video_entries):
-            self.load_more_button.pack(pady=(8, 12))
-
         self.update_card_buttons(bool(self.output_path))
+        self.view.emit(
+            "cards_add",
+            {
+                "generation": self.entries_generation,
+                "items": [card.describe() for card in added if hasattr(card, "describe")],
+                "rendered": self.rendered_count,
+                "total": len(self.video_entries),
+            },
+        )
 
     def handle_card_selection_change(self, card, selected: bool) -> None:
         index = self.card_index_by_card.get(card)
@@ -1413,31 +1521,8 @@ class VideoDownloaderApp:
         return self.download_manager.transcript_tracks_from_info(entry)
 
     def load_more(self):
-        self.render_next_batch()
-
-    def queue_thumbnail(self, card, entry, source_label: str) -> None:
-        url = entry.get("thumbnail") or entry.get("thumbnail_url")
-        if not url:
-            placeholder = self.get_placeholder_image(source_label)
-            card.set_thumbnail_image(self.make_ctk_image(placeholder))
-            return
-
-        def on_ready(image):
-            def apply():
-                if image is not None:
-                    return self.make_ctk_image(image)
-                return None
-
-            if threading.get_ident() != self.main_thread_id:
-                ctk_image = self.run_on_ui_thread(apply)
-            else:
-                ctk_image = apply()
-            self.ui_queue.put(("thumbnail", (card, ctk_image)))
-
-        self.thumbnail_loader.submit(url, self.thumbnail_size, on_ready)
-
-    def make_ctk_image(self, image):
-        return ctk.CTkImage(light_image=image, dark_image=image, size=self.thumbnail_size)
+        if self.rendered_count < len(self.video_entries):
+            self.render_next_batch()
 
     def get_default_output_path(self) -> str:
         downloads = Path.home() / "Downloads"
@@ -1445,89 +1530,67 @@ class VideoDownloaderApp:
             return str(downloads)
         return str(Path.home())
 
-    def get_source_label(self, entry) -> str:
-        url = entry.get("webpage_url") or ""
-        host = urlparse(url).netloc.lower()
-        if host.startswith("www."):
-            host = host[4:]
-        if host:
-            bucket = sum(ord(char) for char in host) % 3
-            return ("site_a", "site_b", "site_c")[bucket]
-        return "default"
-
-    def get_placeholder_image(self, source_label: str):
-        key = (source_label, self.thumbnail_size)
-        cached = self.placeholder_cache.get(key)
-        if cached is not None:
-            return cached
-
-        label, colors = self.thumbnail_styles.get(source_label, self.thumbnail_styles["default"])
-        image = Image.new("RGB", self.thumbnail_size, colors[0])
-        draw = ImageDraw.Draw(image)
-        self._draw_gradient(draw, self.thumbnail_size, colors)
-        image = image.filter(ImageFilter.GaussianBlur(radius=0.6))
-
-        draw = ImageDraw.Draw(image)
-        font = self._get_placeholder_font()
-        text = label.upper()
-        text_box = draw.textbbox((0, 0), text, font=font)
-        text_width = text_box[2] - text_box[0]
-        text_height = text_box[3] - text_box[1]
-        x = (self.thumbnail_size[0] - text_width) / 2
-        y = (self.thumbnail_size[1] - text_height) / 2
-        draw.text((x, y), text, fill="#ffffff", font=font)
-
-        self.placeholder_cache[key] = image
-        return image
-
-    def _draw_gradient(self, draw, size, colors):
-        width, height = size
-        start, end = colors
-        start_rgb = self._hex_to_rgb(start)
-        end_rgb = self._hex_to_rgb(end)
-        for y in range(height):
-            ratio = y / max(1, height - 1)
-            r = int(start_rgb[0] + (end_rgb[0] - start_rgb[0]) * ratio)
-            g = int(start_rgb[1] + (end_rgb[1] - start_rgb[1]) * ratio)
-            b = int(start_rgb[2] + (end_rgb[2] - start_rgb[2]) * ratio)
-            draw.line([(0, y), (width, y)], fill=(r, g, b))
-
-    def _hex_to_rgb(self, value: str):
-        value = value.lstrip("#")
-        return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
-
-    def _get_placeholder_font(self):
-        if self.placeholder_font is not None:
-            return self.placeholder_font
-        try:
-            self.placeholder_font = ImageFont.truetype("arial.ttf", 14)
-        except Exception:
-            self.placeholder_font = ImageFont.load_default()
-        return self.placeholder_font
-
     # ──────────────────────────────────────────────────────────
-    # Tk callbacks / UI helpers
+    # Frontend intents
     # ──────────────────────────────────────────────────────────
-    def browse_folder(self):
-        folder = filedialog.askdirectory()
+    def card_for(self, generation: int, index: int):
+        """Return the live card for a frontend key, or None when stale."""
+        if generation != self.entries_generation:
+            return None
+        card = self.card_by_index.get(index)
+        if card is None or not self._card_in_session(card):
+            return None
+        return card
+
+    def card_intent(self, generation: int, index: int, intent: str, value=None) -> None:
+        card = self.card_for(generation, index)
+        if card is None:
+            return
+        if intent == "select":
+            card.toggle_selected(bool(value))
+        elif intent == "format":
+            card.choose_format(str(value))
+        elif intent == "transcript_choice":
+            card.choose_transcript(value)
+        elif intent == "whisper_model":
+            card.choose_whisper_model(str(value))
+        elif intent == "download":
+            card.request_download()
+        elif intent == "transcript":
+            card.request_transcript()
+        elif intent == "whisper":
+            card.request_whisper()
+
+    def set_output_folder(self, folder: str | None) -> None:
         if folder:
-            self.output_path = folder
-            self.footer.set_output_path(folder)
-            self.log(f"Output folder changed: {folder}")
+            self.output_path = str(folder)
+            self.footer.set_output_path(self.output_path)
+            self.log(f"Output folder changed: {self.output_path}")
         self.update_button_states()
 
+    def browse_folder(self):
+        self.set_output_folder(self.view.pick_folder(self.output_path))
+
+    def set_cookies_file(self, path: str | None) -> None:
+        self.cookies_path = path or None
+        try:
+            store_preferred_cookies_path(self.cookies_path)
+        except Exception as exc:
+            self.log(f"Could not save cookies.txt preference: {exc}")
+        footer = getattr(self, "footer", None)
+        if footer is not None:
+            setter = getattr(footer, "set_cookies_path", None)
+            if setter:
+                setter(self.cookies_path)
+        if self.cookies_path:
+            self.log(f"Using cookies.txt: {self.cookies_path}")
+        else:
+            self.log("Stopped using a cookies.txt file.")
+
     def browse_cookies(self):
-        path = filedialog.askopenfilename(title='Select cookies.txt',
-                                          filetypes=[('Text files', '*.txt'), ('All files', '*.*')])
+        path = self.view.pick_file("Select cookies.txt", self.cookies_path)
         if path:
-            self.cookies_path = path
-            store_preferred_cookies_path(path)
-            footer = getattr(self, "footer", None)
-            if footer is not None:
-                setter = getattr(footer, "set_cookies_path", None)
-                if setter:
-                    setter(path)
-            self.log(f"Using cookies.txt: {path}")
+            self.set_cookies_file(path)
 
     def update_card_buttons(self, has_folder: bool):
         for card in self.cards:
@@ -2419,6 +2482,12 @@ class VideoDownloaderApp:
                     status,
                     "complete",
                 )
+                outputs = (str(result.text_path), str(result.srt_path))
+                self._queue_whisper_worker_event(
+                    "whisper_outputs",
+                    (card, request_id, outputs),
+                    lambda: self.queue_whisper_outputs(card, request_id, outputs),
+                )
         except Exception as exc:
             if not terminal_published and request_id is not None:
                 error_reason = self._sanitize_whisper_error(exc)
@@ -2547,6 +2616,7 @@ class VideoDownloaderApp:
                     self.set_progress(1)
                     self.queue_card_progress(card, 1)
                     self.queue_card_status(card, "Complete", state="complete")
+                    self.queue_card_outputs(card, [verified.path])
                     self.log(
                         f"ffmpeg download complete: {verified.path} "
                         f"({verified.size:,} bytes)"
@@ -2680,6 +2750,7 @@ class VideoDownloaderApp:
                         self.queue_card_progress(card, 1)
                         status = "Already downloaded" if all_preexisting else "Complete"
                         self.queue_card_status(card, status, state="complete")
+                        self.queue_card_outputs(card, [output.path for output in verified_files])
                         # Folder recency fallback is legacy UX evidence only. Whisper
                         # provenance requires one exact path reported by this action.
                         if (
@@ -2707,6 +2778,16 @@ class VideoDownloaderApp:
             if card:
                 self.queue_card_busy(card, False)
         return bool(ok)
+
+    def _recent_transcript_outputs(self, folder: str, started_at: float) -> list[str]:
+        try:
+            return [
+                path
+                for path in self._recent_download_outputs(folder, started_at)
+                if ".transcript." in Path(path).name
+            ]
+        except Exception:
+            return []
 
     def _recent_download_outputs(self, folder: str, started_at: float) -> list[str]:
         ignored_suffixes = (
@@ -2786,6 +2867,7 @@ class VideoDownloaderApp:
     def download_transcript(self, url, out_path, card=None, selected_transcript=None):
         outtmpl = os.path.join(out_path, '%(title)s.transcript.%(ext)s')
         success = False
+        started_at = time.time()
 
         def mark_success(result):
             nonlocal success
@@ -2796,6 +2878,7 @@ class VideoDownloaderApp:
             if card:
                 self.queue_card_progress(card, 1)
                 self.queue_card_status(card, f"Transcript saved ({result.source})", state="complete")
+                self.queue_card_outputs(card, self._recent_transcript_outputs(out_path, started_at))
             languages = ", ".join(result.languages[:5])
             if len(result.languages) > 5:
                 languages += ", ..."
@@ -2843,10 +2926,11 @@ class VideoDownloaderApp:
         return success
 
     def on_close(self):
-        try:
-            self.thumbnail_loader.clear_cache(remove_dir=False)
-        finally:
-            self.root.destroy()
+        run = self.batch_run
+        if run is not None:
+            run.cancel.set()
+        self.stop()
+        self.executor.shutdown(wait=False, cancel_futures=True)
 
     # ──────────────────────────────────────────────────────────
     # Auth helpers / Selenium fallback
@@ -2858,7 +2942,27 @@ class VideoDownloaderApp:
             self.log(f"[dev] Using developer.json credentials for {domain}.")
             return username, password
 
-        return prompt_credentials(self.root, url, browser_automation=browser_automation)
+        site = site_label(url)
+        if browser_automation:
+            title = f"Sign in to {site}" if site else "Sign in"
+            message = (
+                "Link2Vid will open the site in Chrome, sign in with these "
+                "credentials, then look for playable media."
+            )
+        else:
+            title = f"Sign in to {site}" if site else "Sign in"
+            message = (
+                "Link2Vid signs in directly (no browser window), loads the video, "
+                "then signs out. Credentials are not saved."
+            )
+        answer = self._ask("credentials", {"title": title, "message": message, "site": site})
+        if not isinstance(answer, dict):
+            return None, None
+        username = str(answer.get("username") or "").strip()
+        password = str(answer.get("password") or "")
+        if not username or not password:
+            return None, None
+        return username, password
 
     def selenium_fallback(self, page_url, username=None, password=None):
         if not username or not password:
@@ -2887,4 +2991,4 @@ class VideoDownloaderApp:
             return {}
 
 
-__all__ = ["VideoDownloaderApp"]
+__all__ = ["AppController", "BatchItem", "BatchPromptPolicy", "BatchRun", "entry_details", "site_label"]

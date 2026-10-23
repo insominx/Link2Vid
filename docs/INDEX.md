@@ -9,6 +9,7 @@ Stable docs for Link2Vid. Ephemeral agent notes belong in `docs/scratch/` (local
 | [../README.md](../README.md) | Users | Setup, usage, `developer.json` |
 | [../AGENTS.md](../AGENTS.md) | Agents | Repo rules, what not to commit, validation commands |
 | [architecture.md](./architecture.md) | Engineers | Current module layout and fetch/download flow |
+| [ui-frontend.md](./ui-frontend.md) | Engineers | Web frontend, Python↔page event protocol, design tokens, mock backend |
 
 ## Operations
 

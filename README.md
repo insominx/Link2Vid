@@ -1,22 +1,23 @@
 # Link2Vid
 
-Link2Vid is a desktop application for downloading videos from various platforms using a simple and modern graphical interface. It leverages [yt-dlp](https://github.com/yt-dlp/yt-dlp) for video extraction and download, and is built with [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter) for a sleek, dark-themed UI.
+Link2Vid is a desktop app for saving video, audio, captions, and local speech-to-text transcripts from a link. It uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) for extraction and download and [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) for transcription. The engine is Python; the interface is a native window ([pywebview](https://pywebview.flowrl.com/) + WebView2) with a hand-built HTML/CSS frontend that follows the Windows light/dark setting.
 
 ## Features
-- Download videos from a wide range of sites supported by yt-dlp
+- Download videos from the wide range of sites yt-dlp supports, plus playlists and channels
 - Fetch public [Udio](https://www.udio.com) `/songs/` links without login (Udio email-link sign-in is not automated)
-- Modern, dark-themed GUI
-- Select and preview available video formats, including **Audio (MP3)** to save only the soundtrack
-- Choose download directory
-- Download transcript/caption files without downloading video/audio media
-- Select playlist/channel entries and batch-download media or provider captions
+- Choose **Video** (best quality with sound), **Video only**, or **Audio** (MP3) per item
+- Save the site's captions in any listed language without downloading media
 - Create local speech-to-text transcripts with Faster Whisper (`.txt` and `.srt`)
-- Progress bar and log output
+- Select playlist/channel entries and batch-download media or captions
+- Open or reveal finished files straight from each card
+- Paste anywhere (`Ctrl+V`) or drop a link on the window to fetch it
+- Live Activity log and one-click **Copy diagnostics** for bug reports
 
 ## Requirements
 - Python 3.10+
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp)
-- [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter)
+- Microsoft Edge WebView2 Runtime (preinstalled on Windows 11 and current Windows 10)
+- Python packages from `requirements.txt` (yt-dlp, pywebview, faster-whisper, selenium, ...)
+- Optional: ffmpeg (needed to merge video+audio and to make MP3s) and a JS runtime (deno/node/bun) for challenge-protected YouTube formats
 
 Install dependencies with:
 ```bash
@@ -33,15 +34,14 @@ pip install -r requirements.txt
    ```bash
    run_link2vid.bat
    ```
-   Or directly: `pythonw video_downloader.py`
-3. Paste a video or playlist URL into the input field.
-4. Click **Fetch** to load result cards and available formats.
-5. Use each card's checkbox, **Select all**, or **Select none** to choose entries. Selection covers the full fetched list, including entries not yet revealed by **Load more**.
-6. Choose a download folder in the footer. If a site asks for login/cookies, pick that browser under **Cookies** and close it before retrying.
-7. Click **Download selected** to save each selected media item or **Transcript selected** to save provider captions for each selected item. Batch actions run sequentially; **Stop** finishes the current item and skips the rest.
-8. For one card, choose **Audio (MP3)** to save only the soundtrack, click **Download** or **Transcript**, or choose a model and click **Whisper** to transcribe speech locally.
+   Or directly: `pythonw video_downloader.py` (add `--devtools` to open the WebView developer tools).
+3. Paste a video, playlist, or channel link and press **Fetch** (or just press `Ctrl+V` anywhere in the window).
+4. For a single video, use **Download** (the chevron next to it picks Video, Video only, or Audio) or **Transcript** to save captions or run Whisper with a chosen model.
+5. For playlists, every item starts selected. Use each card's checkbox or the header checkbox to change the selection; it covers the whole list, including items that load as you scroll. **Download N** saves each selected item with its own format, and **Save captions** saves each item's provider captions. Batch runs are sequential; **Stop** finishes the current item and skips the rest.
+6. The status bar at the bottom shows the download folder (click to change it, or use the folder icon to open it) and the **Cookies** source. If a site asks you to sign in, pick the browser you use for it (close that browser first), or point Link2Vid at a `cookies.txt` export.
+7. Finished cards offer **Open** and **Show in folder**; failed cards offer **Retry** and **Details**, which opens the Activity log (`Ctrl+J`).
 
-Batch actions produce the same individual files as the corresponding per-card actions; they never create a combined archive or media file. Batch transcripts use provider captions and do not run Whisper.
+Batch actions produce the same individual files as the corresponding per-card actions; they never create a combined archive or media file. Batch captions use provider captions and do not run Whisper.
 
 ## Local Whisper transcription
 
@@ -55,6 +55,7 @@ When available, **large-v3** is selected by default for maximum general-purpose 
 
 - [docs/INDEX.md](docs/INDEX.md) — doc map
 - [docs/architecture.md](docs/architecture.md) — how the app is structured
+- [docs/ui-frontend.md](docs/ui-frontend.md) — the web frontend and how to iterate on it
 - [docs/verification-checklist.md](docs/verification-checklist.md) — manual regression checklist
 - [docs/windows-packaging.md](docs/windows-packaging.md) — build a Windows `.exe` (PyInstaller onedir)
 

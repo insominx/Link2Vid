@@ -1,9 +1,10 @@
 import argparse
+import os
 import sys
 
 
 SMOKE_IMPORTS = (
-    "customtkinter",
+    "webview",
     "yt_dlp",
     "yt_dlp_ejs",
     "faster_whisper",
@@ -30,11 +31,19 @@ def _run_smoke():
             print(f"[ERROR] Smoke import failed for {name}: {exc}", file=sys.stderr)
             raise SystemExit(1) from exc
 
-    try:
-        from link2vid.ui.main_window import VideoDownloaderApp  # noqa: F401
-    except Exception as exc:
-        print(f"[ERROR] Smoke import failed for link2vid.ui.main_window: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
+    for name in ("link2vid.app.controller", "link2vid.ui.webview_app"):
+        try:
+            importlib.import_module(name)
+        except Exception as exc:
+            print(f"[ERROR] Smoke import failed for {name}: {exc}", file=sys.stderr)
+            raise SystemExit(1) from exc
+
+    from link2vid.ui import WEB_ROOT
+
+    for asset in ("index.html", "styles.css", "js/main.js", "vendor/preact-htm.module.js"):
+        if not (WEB_ROOT / asset).is_file():
+            print(f"[ERROR] Smoke check failed: missing UI asset {WEB_ROOT / asset}", file=sys.stderr)
+            raise SystemExit(1)
 
     from link2vid.core.runtime import startup_summary
 
@@ -50,6 +59,11 @@ def main(argv=None):
         action="store_true",
         help="headless import check for frozen builds",
     )
+    parser.add_argument(
+        "--devtools",
+        action="store_true",
+        help="open the WebView developer tools",
+    )
     args = parser.parse_args(argv)
 
     from link2vid.core.runtime import bootstrap_runtime
@@ -59,13 +73,15 @@ def main(argv=None):
     if args.smoke:
         return _run_smoke()
 
-    import customtkinter as ctk
-    from link2vid.ui.main_window import VideoDownloaderApp
+    from link2vid.ui.webview_app import run
 
-    root = ctk.CTk()
-    VideoDownloaderApp(root)
-    root.mainloop()
-    return 0
+    code = run(debug=args.devtools)
+    # Closing the window ends the app. Fetch/download workers are not
+    # interruptible, so do not let interpreter shutdown wait on them.
+    for stream in (sys.stdout, sys.stderr):
+        if stream is not None:  # None under pythonw / windowed builds
+            stream.flush()
+    os._exit(code)
 
 
 if __name__ == "__main__":

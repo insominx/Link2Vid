@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from link2vid.ui.main_window import VideoDownloaderApp
+from link2vid.app.controller import AppController
 
 
 class _Card:
@@ -18,7 +18,7 @@ class _Bar:
 
 class TestBatchSelectionState(unittest.TestCase):
     def setUp(self):
-        self.app = object.__new__(VideoDownloaderApp)
+        self.app = object.__new__(AppController)
         self.app.video_entries = [{} for _ in range(45)]
         self.app.selected_entry_indexes = set(range(45))
         self.app.card_index_by_card = {}
@@ -31,7 +31,7 @@ class TestBatchSelectionState(unittest.TestCase):
             "_refresh_batch_bar", "handle_card_selection_change",
             "select_all_entries", "select_no_entries", "_selected_indexes_ordered",
         ):
-            setattr(self.app, name, getattr(VideoDownloaderApp, name).__get__(self.app))
+            setattr(self.app, name, getattr(AppController, name).__get__(self.app))
         self.app.card_index_by_card = {
             card: index for index, card in self.app.card_by_index.items()
         }

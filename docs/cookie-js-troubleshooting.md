@@ -23,14 +23,14 @@ For app architecture and fetch routing, see [architecture.md](./architecture.md)
    - If GitHub is blocked, install bundled scripts: `pip install -U "yt-dlp[default]"`.
 
 4. **Use cookies for restricted videos**
-   - Choose a browser in the footer **Cookies** menu. Link2Vid reads that browser's cookies automatically.
+   - Choose a browser in the **Cookies** menu in the status bar. Link2Vid reads that browser's cookies automatically.
    - For bot/age/consent errors it also tries other installed browsers.
    - If the chosen browser is open, fully quit it (including background/tray processes) and retry.
    - Fetch can succeed on a public YouTube URL while the later media download still gets HTTP 403. For **Audio (MP3)**, that is often YouTube blocking audio-only DASH URLs, not missing cookies — Link2Vid then extracts MP3 from the same muxed file **Best (A+V)** uses.
 
 ## Windows browser cookies
 
-yt-dlp has to *copy and decrypt* the browser cookie database, and on current Windows both steps can fail. Since Chrome 127, Chromium browsers encrypt cookies with **App-Bound Encryption**, which yt-dlp cannot decrypt at all ([yt-dlp #10927](https://github.com/yt-dlp/yt-dlp/issues/10927)) — closing the browser does not help. In practice this means **Chrome, Brave, and Edge cookies are unavailable**, whatever the footer menu offers.
+yt-dlp has to *copy and decrypt* the browser cookie database, and on current Windows both steps can fail. Since Chrome 127, Chromium browsers encrypt cookies with **App-Bound Encryption**, which yt-dlp cannot decrypt at all ([yt-dlp #10927](https://github.com/yt-dlp/yt-dlp/issues/10927)) — closing the browser does not help. In practice this means **Chrome, Brave, and Edge cookies are unavailable**, whatever the Cookies menu offers.
 
 | Symptom | Meaning | What to do |
 |---|---|---|
@@ -38,7 +38,7 @@ yt-dlp has to *copy and decrypt* the browser cookie database, and on current Win
 | Could not copy Chrome cookie database | That Chromium browser is running and the DB is locked | Fully quit it (including background/tray processes) — but note decryption may still fail for the reason above |
 | Could not find firefox/edge cookies database | That browser is not installed, or has no profile | Ignore it; it is only a fallback candidate |
 
-Because of this, Link2Vid tries **without cookies first** and only escalates to browser cookies when the site actually asks for sign-in. Choosing a browser in the footer marks it as a deliberate choice and uses it immediately for the rest of that session.
+Because of this, Link2Vid tries **without cookies first** and only escalates to browser cookies when the site actually asks for sign-in. Choosing a browser in the Cookies menu marks it as a deliberate choice and uses it immediately for the rest of that session.
 
 ### cookies.txt export
 
@@ -46,7 +46,7 @@ For genuinely gated content (private, members-only, age-restricted), a cookies.t
 
 1. Install a cookies-export extension (e.g. "Get cookies.txt LOCALLY" for Chrome/Edge/Brave, or "cookies.txt" for Firefox).
 2. Visit the site while logged in and export cookies to a `.txt` file (Netscape format).
-3. In Link2Vid's footer, click **cookies.txt...** next to the Cookies menu and select that file.
+3. In Link2Vid's status bar, open **Cookies** → **Use a cookies.txt file…** and select that file.
 4. Link2Vid remembers the path and uses it for every download from then on.
 
 Re-export the file when the session expires or after you sign out/in.
@@ -81,7 +81,7 @@ Things that do **not** fix this, all verified: updating yt-dlp, browser cookies,
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Signature / cipher / extractor errors | Outdated yt-dlp | Update yt-dlp |
-| 403 / Forbidden / bot check / sign in | Auth, cookies, or YouTube blocking audio-only URLs | For video, choose a browser in the footer and close it. If **Best (A+V)** works but **Audio (MP3)** 403s, retry Audio — Link2Vid extracts MP3 from the muxed file |
+| 403 / Forbidden / bot check / sign in | Auth, cookies, or YouTube blocking audio-only URLs | For video, choose a browser under **Cookies** and close it. If **Best (A+V)** works but **Audio (MP3)** 403s, retry Audio — Link2Vid extracts MP3 from the muxed file |
 | No supported JavaScript runtime | Missing deno/node/bun | Install runtime, retry |
 | n challenge / only images available | EJS scripts missing or blocked | JS runtime + `yt-dlp[default]` |
 | No audio / silent video | Video-only format selected | Use **Best (A+V)** |
@@ -92,7 +92,7 @@ Things that do **not** fix this, all verified: updating yt-dlp, browser cookies,
 
 If yt-dlp fails, Link2Vid may try an embedded-page scrape, direct HTTP media scan, HLS detection, or Selenium with your confirmation. These paths are fallback routes for pages where a direct media URL can be discovered.
 
-Login-gated community pages that redirect yt-dlp to a site login URL (or that match credentials in local `developer.json`) are routed to the Selenium confirmation path. Ordinary cookie challenges on unconfigured public sites use the footer browser picker and automatic browser-cookie lookup.
+Login-gated community pages that redirect yt-dlp to a site login URL (or that match credentials in local `developer.json`) are routed to the Selenium confirmation path. Ordinary cookie challenges on unconfigured public sites use the Cookies browser picker and automatic browser-cookie lookup.
 
 ## Reporting issues
 

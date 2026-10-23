@@ -10,7 +10,7 @@ BUILD_BAT = ROOT / "build_windows.bat"
 
 REQUIRED_HIDDENIMPORTS = {
     "yt_dlp_ejs",
-    "PIL",
+    "clr",
     "m3u8",
     "selenium",
     "requests",
@@ -25,7 +25,7 @@ REQUIRED_HIDDENIMPORTS = {
 
 REQUIRED_COLLECT_ALL = {
     "yt_dlp",
-    "customtkinter",
+    "webview",
     "selenium",
 }
 
@@ -63,6 +63,12 @@ class TestPackagingContract(unittest.TestCase):
         self.assertIn("COLLECT(", text)
         self.assertIn("exclude_binaries=True", text)
         self.assertRegex(text, r'name=["\']Link2Vid["\']')
+
+    def test_spec_bundles_web_frontend_and_icon(self):
+        text = SPEC_PATH.read_text(encoding="utf-8")
+        self.assertIn('ROOT / "link2vid" / "ui" / "web"', text)
+        self.assertIn('"link2vid/ui/web"', text)
+        self.assertIn('icon=str(ROOT / "link2vid.ico")', text)
 
     def test_spec_entry_point(self):
         text = SPEC_PATH.read_text(encoding="utf-8")

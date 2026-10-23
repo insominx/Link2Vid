@@ -25,7 +25,7 @@ MIN_PYTHON = (3, 10)
 MIN_PYTHON_LABEL = "3.10+"
 
 REQUIRED_SMOKE_MODULES = (
-    "customtkinter",
+    "webview",
     "yt_dlp",
     "yt_dlp_ejs",
     "faster_whisper",
@@ -38,12 +38,12 @@ REQUIRED_SMOKE_MODULES = (
 
 # Modules that must import on Python 3.10 (postponed annotations where needed).
 PYTHON310_IMPORT_TARGETS = (
-    ROOT / "link2vid" / "ui" / "main_window.py",
+    ROOT / "link2vid" / "app" / "controller.py",
     ROOT / "link2vid" / "core" / "whisper_transcription.py",
     ROOT / "link2vid" / "core" / "audio_source.py",
     ROOT / "link2vid" / "core" / "runtime.py",
     ROOT / "link2vid" / "core" / "diagnostics.py",
-    ROOT / "link2vid" / "ui" / "components" / "video_card.py",
+    ROOT / "link2vid" / "app" / "viewmodels.py",
 )
 
 PYTHON310_GRAMMAR_TARGETS = (
@@ -53,9 +53,10 @@ PYTHON310_GRAMMAR_TARGETS = (
     ROOT / "link2vid" / "core" / "diagnostics.py",
     ROOT / "link2vid" / "core" / "runtime.py",
     ROOT / "link2vid" / "core" / "whisper_transcription.py",
-    ROOT / "link2vid" / "ui" / "main_window.py",
-    ROOT / "link2vid" / "ui" / "prototype.py",
-    ROOT / "link2vid" / "ui" / "components" / "video_card.py",
+    ROOT / "link2vid" / "app" / "controller.py",
+    ROOT / "link2vid" / "app" / "viewmodels.py",
+    ROOT / "link2vid" / "app" / "desktop.py",
+    ROOT / "link2vid" / "ui" / "webview_app.py",
 )
 
 PYTHON310_IMPORT_MODULES = (
@@ -65,9 +66,9 @@ PYTHON310_IMPORT_MODULES = (
     "link2vid.core.diagnostics",
     "link2vid.core.runtime",
     "link2vid.core.whisper_transcription",
-    "link2vid.ui.main_window",
-    "link2vid.ui.prototype",
-    "link2vid.ui.components.video_card",
+    "link2vid.app.controller",
+    "link2vid.app.viewmodels",
+    "link2vid.ui.webview_app",
 )
 
 
@@ -248,7 +249,7 @@ class TestPythonContract(unittest.TestCase):
         self.assertNotIn('where "%PYTHON%"', text)
 
         gate_idx = text.find("check_python.bat")
-        import_idx = text.find("from link2vid.ui.main_window import VideoDownloaderApp")
+        import_idx = text.find("from link2vid.ui.webview_app import run")
         self.assertGreater(gate_idx, 0)
         self.assertGreater(import_idx, gate_idx, "version gate must run before app import")
         self.assertIn("Link2Vid was not launched", text)
@@ -386,12 +387,12 @@ class TestPythonContract(unittest.TestCase):
                         f"{path.relative_to(ROOT)} failed current py_compile: {exc}"
                     )
 
-    def test_video_card_is_in_static_and_live_import_audits(self):
-        video_card = ROOT / "link2vid" / "ui" / "components" / "video_card.py"
-        self.assertIn(video_card, PYTHON310_IMPORT_TARGETS)
-        self.assertIn(video_card, PYTHON310_GRAMMAR_TARGETS)
+    def test_view_models_are_in_static_and_live_import_audits(self):
+        viewmodels = ROOT / "link2vid" / "app" / "viewmodels.py"
+        self.assertIn(viewmodels, PYTHON310_IMPORT_TARGETS)
+        self.assertIn(viewmodels, PYTHON310_GRAMMAR_TARGETS)
         self.assertIn(
-            "link2vid.ui.components.video_card",
+            "link2vid.app.viewmodels",
             PYTHON310_IMPORT_MODULES,
         )
 
@@ -402,7 +403,7 @@ class TestPythonContract(unittest.TestCase):
         source = _read(ENTRY)
         for name in REQUIRED_SMOKE_MODULES:
             self.assertIn(name, source)
-        self.assertIn("VideoDownloaderApp", source)
+        self.assertIn("link2vid.ui.webview_app", source)
         # Must remain headless: no UI mainloop and no model construction/download.
         smoke_fn = None
         tree = ast.parse(source)
