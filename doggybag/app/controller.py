@@ -15,7 +15,6 @@ import threading
 import queue
 import os
 import shutil
-import json
 import time
 import sys
 import tempfile
@@ -33,19 +32,12 @@ from ..core.cookie_prefs import (
     store_preferred_cookies_browser,
     store_preferred_cookies_path,
 )
-from ..core.dev_defaults import dev_credentials_for_url, dev_domain_for_url, resolve_login_plan
+from ..core.dev_defaults import dev_credentials_for_url, dev_domain_for_url
 from ..core import (
     AudioAcquisitionError,
     AudioSourceResolver,
     CookiesRequiredError,
-    DirectHlsFound,
     DownloadManager,
-    NoTranscriptAvailableError,
-    FetchError,
-    FetchResults,
-    NeedsCookies,
-    NeedsLogin,
-    NeedsSelenium,
     SourceKind,
     TranscriptionRequest,
     TranscriptionResult,
@@ -58,21 +50,33 @@ from ..core import (
     build_diagnostics,
     classify_error,
     get_error_guidance,
-    download_with_ffmpeg,
     entry_watch_url,
     get_format_options,
     get_yt_dlp_version,
     is_audio_extract_format,
     normalize_url,
-    sanitize_filename,
     sanitize_whisper_error_reason,
-    unique_output_path,
-    selenium_fetch_media_entries,
     url_from_clipboard_text,
 )
-from ..core.extractors import build_media_entries, title_from_page_url
 from ..core.runtime import model_cache_dir
 from .view import NullView, ViewPort
+from .workflow import (
+    collection_title,
+    direct_output_path,
+    download_direct,
+    download_media,
+    download_provider_transcript,
+    entry_url,
+    folder_snapshot,
+    is_direct_entry,
+    load_dev_defaults,
+    recent_outputs,
+    resolve_fetch,
+    resolve_merge_format,
+    sanitize_entries,
+    transcript_tracks,
+    verify_outputs,
+)
 from .viewmodels import BatchBarModel, CardModel, FooterModel, LogModel, UrlModel, log_level
 
 # Card status labels for Whisper phases (unknown-duration work stays indeterminate).
@@ -104,6 +108,33 @@ class BatchPromptPolicy:
     cookies_browser: str | None = None
     format_fallback_answer: bool | None = None
     ffmpeg_answer: str | None = None
+
+
+class _ControllerPrompter:
+    """Workflow questions answered by the controller's dialogs (and its batch policy)."""
+
+    def __init__(self, app) -> None:
+        self._app = app
+
+    def cookie_retry(self) -> bool:
+        return self._app._prepare_cookie_retry()
+
+    def format_fallback(self, *, extract_audio: bool) -> bool:
+        return self._app.confirm_format_fallback(extract_audio=extract_audio)
+
+    def ffmpeg_missing(self, fmt_label: str) -> str:
+        return self._app.confirm_ffmpeg_fallback(fmt_label)
+
+    def credentials(self, url: str, *, browser_automation: bool):
+        return self._app.ui_prompt_for_credentials(url, browser_automation=browser_automation)
+
+    def allow_browser_automation(self) -> bool:
+        return self._app.ui_confirm(
+            "Fallback",
+            "Automatic scrape failed. Try browser automation?\n\n"
+            "Doggybag will open the target site in Chrome, log in with the "
+            "credentials you provide, then look for a playable media URL.",
+        )
 
 
 @dataclass(frozen=True)
@@ -1224,76 +1255,15 @@ class AppController:
 
     def _fetch_videos_worker(self, url: str) -> None:
         try:
-            username, password = dev_credentials_for_url(url, self.dev_defaults)
-
-            outcome = self.fetcher.fetch(url, username, password)
-            if isinstance(outcome, NeedsCookies):
-                error_to_log = outcome.error
-                if isinstance(outcome.error, CookiesRequiredError) and outcome.error.original:
-                    error_to_log = outcome.error.original
-                self.log_error("yt-dlp", error_to_log)
-                if not self._prepare_cookie_retry():
-                    self.ui_queue.put(("results", []))
-                    return
-                outcome = self.fetcher.fetch(url, username, password)
-                if isinstance(outcome, NeedsCookies):
-                    self.log("Browser cookie retry did not resolve the fetch error.")
-                    self.ui_queue.put(("results", []))
-                    return
-
-            if isinstance(outcome, NeedsLogin):
-                self.log(str(outcome.error))
-                username, password = self.ui_prompt_for_credentials(url, browser_automation=False)
-                if not username or not password:
-                    self.log("No credentials provided.")
-                    self.ui_queue.put(("results", []))
-                    return
-                outcome = self.fetcher.fetch(url, username, password)
-
-            if isinstance(outcome, FetchResults):
-                if outcome.error:
-                    self.log_error("yt-dlp", outcome.error)
-                self.ui_queue.put(("results", outcome.entries))
-                return
-
-            if isinstance(outcome, DirectHlsFound):
-                if outcome.error:
-                    self.log("[Fallback] yt-dlp native extraction failed; using direct HLS fallback.")
-                entries = build_media_entries(
-                    [outcome.result.playlist_url],
-                    page_title=title_from_page_url(url),
-                    headers=outcome.result.headers,
-                )
-                self.ui_queue.put(("results", entries))
-                return
-
-            if isinstance(outcome, NeedsSelenium):
-                if outcome.error:
-                    self.log_error("yt-dlp", outcome.error)
-                if self.ui_confirm(
-                    "Fallback",
-                    "Automatic scrape failed. Try browser automation?\n\n"
-                    "Doggybag will open the target site in Chrome, log in with the "
-                    "credentials you provide, then look for a playable media URL.",
-                ):
-                    username, password = self.ui_prompt_for_credentials(url)
-                    if not username or not password:
-                        self.log("No credentials provided.")
-                        self.ui_queue.put(("results", []))
-                        return
-                    entries = self.selenium_fallback(url, username, password)
-                    if entries:
-                        self.ui_queue.put(("results", entries))
-                        return
-                    self.log("No media found with Selenium.")
-
-                self.ui_queue.put(("results", []))
-                return
-
-            if isinstance(outcome, FetchError):
-                self.log_error("Fetch", outcome.error)
-
-            self.ui_queue.put(("results", []))
+            resolution = resolve_fetch(
+                url,
+                fetcher=self.fetcher,
+                prompter=_ControllerPrompter(self),
+                log=self.log,
+                log_error=self.log_error,
+                dev_defaults=self.dev_defaults,
+            )
+            self.ui_queue.put(("results", resolution.entries))
         finally:
             self.ui_queue.put(("fetch_done", None))
 
@@ -1352,13 +1322,7 @@ class AppController:
         self.batch_bar.hide()
 
     def _sanitize_entries(self, entries) -> list[dict]:
-        raw_entries = list(entries or [])
-        sanitized = [entry for entry in raw_entries if isinstance(entry, dict)]
-        dropped = len(raw_entries) - len(sanitized)
-        if dropped:
-            suffix = "entry" if dropped == 1 else "entries"
-            self.log(f"Dropped {dropped} unusable {suffix}.")
-        return sanitized
+        return sanitize_entries(entries, log=self.log)
 
     def set_results_state(self, text: str):
         self.view.emit("results_state", {"text": text or ""})
@@ -1368,21 +1332,7 @@ class AppController:
 
     def _collection_title(self) -> str | None:
         """Playlist name, or the one channel every entry shares."""
-        entries = self.video_entries
-        if len(entries) < 2:
-            return None
-        for key in ("playlist_title", "playlist"):
-            for entry in entries[:5]:
-                value = entry.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-        for key in ("channel", "uploader"):
-            values = {entry.get(key) for entry in entries}
-            if len(values) == 1:
-                value = values.pop()
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-        return None
+        return collection_title(self.video_entries)
 
     def populate_cards(self):
         self.clear_results()
@@ -1504,21 +1454,13 @@ class AppController:
         return self.entry_transcript_by_index.get(index)
 
     def entry_url_for_entry(self, entry) -> str | None:
-        resolved = entry_watch_url(entry)
-        if resolved:
-            return resolved
-        if len(self.video_entries) <= 1:
+        fallback = None
+        if len(self.video_entries) <= 1 and entry_watch_url(entry) is None:
             fallback = self.url_entry.get().strip()
-            return fallback or None
-        return None
+        return entry_url(entry, fallback_url=fallback)
 
     def get_transcript_options(self, entry):
-        if not isinstance(entry, dict):
-            return None
-        has_transcript_metadata = "subtitles" in entry or "automatic_captions" in entry
-        if not has_transcript_metadata:
-            return None
-        return self.download_manager.transcript_tracks_from_info(entry)
+        return transcript_tracks(self.download_manager, entry)
 
     def load_more(self):
         if self.rendered_count < len(self.video_entries):
@@ -1607,7 +1549,7 @@ class AppController:
                 continue
             entry = self.video_entries[index]
             title = str(entry.get("title") or "Video")
-            if entry.get("_ffmpeg_headers"):
+            if is_direct_entry(entry):
                 skipped += 1
                 self.log(
                     f"Batch {kind} skipped: direct media not supported in batch ({title})."
@@ -1696,16 +1638,17 @@ class AppController:
         if run.kind == "media":
             format_id = item.format_id or self.format_options[0]["format"]
             fmt_label = item.fmt_label or self.format_label_map.get(format_id, format_id)
-            if not self.ffmpeg_available and "+" in format_id:
-                choice = self.confirm_ffmpeg_fallback(fmt_label)
-                if choice == "cancel":
-                    return None, "ffmpeg declined"
-                if choice == "fallback":
-                    format_id = "best"
-                    fmt_label = self.format_label_map.get(format_id, "Best (single file)")
-                    self.log("ffmpeg missing: switching to Best (single file) for compatibility.")
-                else:
-                    self.log("ffmpeg missing: proceeding without merge support (may fail or be video-only).")
+            merge = resolve_merge_format(
+                format_id,
+                fmt_label,
+                ffmpeg_available=self.ffmpeg_available,
+                prompter=_ControllerPrompter(self),
+                log=self.log,
+                labels=self.format_label_map,
+            )
+            if merge is None:
+                return None, "ffmpeg declined"
+            format_id, fmt_label = merge
             media_epoch = self.invalidate_verified_media(card)
             if card is not None:
                 self.queue_card_busy(card, True)
@@ -1842,29 +1785,29 @@ class AppController:
             return
         fmt_id = format_id or self.format_options[0]["format"]
         fmt_label = self.format_label_map.get(fmt_id, fmt_id)
-        ffmpeg_headers = entry.get("_ffmpeg_headers")
-        if ffmpeg_headers:
+        if is_direct_entry(entry):
             # Invalidate prior association on the main thread before any worker output.
             media_epoch = self.invalidate_verified_media(card)
             self._download_direct_media(
                 card,
                 url,
-                ffmpeg_headers,
+                entry.get("_ffmpeg_headers"),
                 entry.get('title', 'Video'),
                 media_epoch=media_epoch,
                 audio_only=is_audio_extract_format(fmt_id),
             )
             return
-        if not self.ffmpeg_available and '+' in fmt_id:
-            choice = self.confirm_ffmpeg_fallback(fmt_label)
-            if choice == "cancel":
-                return
-            if choice == "fallback":
-                fmt_id = "best"
-                fmt_label = self.format_label_map.get(fmt_id, "Best (single file)")
-                self.log("ffmpeg missing: switching to Best (single file) for compatibility.")
-            else:
-                self.log("ffmpeg missing: proceeding without merge support (may fail or be video-only).")
+        merge = resolve_merge_format(
+            fmt_id,
+            fmt_label,
+            ffmpeg_available=self.ffmpeg_available,
+            prompter=_ControllerPrompter(self),
+            log=self.log,
+            labels=self.format_label_map,
+        )
+        if merge is None:
+            return
+        fmt_id, fmt_label = merge
         # Invalidate prior association on the main thread before any worker output.
         media_epoch = self.invalidate_verified_media(card)
         self.last_action_kind = "media"
@@ -2575,8 +2518,7 @@ class AppController:
             return
         if media_epoch is None:
             media_epoch = self.invalidate_verified_media(card)
-        safe_title = sanitize_filename(title)
-        outfile = unique_output_path(folder, safe_title, "mp3" if audio_only else "mp4")
+        outfile = direct_output_path(folder, title, audio_only=audio_only)
         path_label = "Direct audio" if audio_only else "Direct HLS"
         self.last_action_kind = "media"
         self.last_selected_format = "ffmpeg-audio" if audio_only else "ffmpeg"
@@ -2603,33 +2545,25 @@ class AppController:
                 self.queue_card_progress(card, fraction)
 
             try:
-                download_with_ffmpeg(
+                result = download_direct(
                     media_url,
+                    headers,
                     outfile,
-                    headers or {},
-                    progress_hook=on_progress,
                     audio_only=audio_only,
+                    log=self.log,
+                    log_error=self.log_error,
+                    progress_hook=on_progress,
+                    verify=self._verify_download_outputs,
                 )
-                verified_files = self._verify_download_outputs([outfile])
-                if len(verified_files) == 1:
-                    verified = verified_files[0]
+                if result.ok:
                     self.set_progress(1)
                     self.queue_card_progress(card, 1)
                     self.queue_card_status(card, "Complete", state="complete")
-                    self.queue_card_outputs(card, [verified.path])
-                    self.log(
-                        f"ffmpeg download complete: {verified.path} "
-                        f"({verified.size:,} bytes)"
-                    )
-                    self.queue_verified_media(card, verified, media_epoch)
+                    self.queue_card_outputs(card, [result.output.path])
+                    self.queue_verified_media(card, result.output, media_epoch)
                 else:
                     self.set_progress(0)
                     self.queue_card_status(card, f"Failed ({path_label})", state="failed")
-                    self.log(
-                        "Download verification failed: ffmpeg reported success, "
-                        "but Doggybag could not confirm the final file exists."
-                    )
-                    self.log(f"Unverified output path: {outfile}")
             except Exception as exc:
                 self.set_progress(0)
                 self.queue_card_status(card, f"Failed ({path_label})", state="failed")
@@ -2641,8 +2575,7 @@ class AppController:
 
     def download_video(self, url, format_id, out_path, card=None, fmt_label=None, media_epoch=None):
         finished_logged = False
-        saved_files = []
-        ok = False
+        result = None
 
         def hook(d):
             nonlocal finished_logged
@@ -2659,125 +2592,50 @@ class AppController:
                 if card:
                     self.queue_card_status(card, "Finalizing", state="downloading")
 
-        def post_hook(filepath):
-            if filepath:
-                final_path = os.path.abspath(filepath)
-                saved_files.append(final_path)
-                self.log(f"yt-dlp reported final path: {final_path}")
+        def on_format_fallback(selected_format, label):
+            self.last_selected_format = selected_format
+            self.last_selected_label = label
+            if card:
+                self.set_progress(0)
+                self.queue_card_progress(card, 0)
+                self.queue_card_status(card, f"Retrying ({label})", state="downloading")
 
-        outtmpl = os.path.join(out_path, '%(title)s.%(ext)s')
-        started_at = time.time()
-        wants_audio = is_audio_extract_format(format_id)
-        ffmpeg_ok = bool(getattr(self, "ffmpeg_available", True))
-        extract_audio = wants_audio and ffmpeg_ok
-        if wants_audio and not ffmpeg_ok:
-            self.log("ffmpeg missing: saving audio in its original format instead of MP3.")
         try:
-            self.log(
-                "Download runtime: "
-                f"pid={os.getpid()} exe={sys.executable} cwd={os.getcwd()} "
-                f"out_path={out_path} outtmpl={outtmpl}"
+            result = download_media(
+                self.download_manager,
+                url,
+                format_id,
+                out_path,
+                prompter=_ControllerPrompter(self),
+                log=self.log,
+                log_error=self.log_error,
+                fmt_label=fmt_label,
+                ffmpeg_available=bool(getattr(self, "ffmpeg_available", True)),
+                labels=self.format_label_map,
+                progress_hook=hook,
+                on_format_fallback=on_format_fallback,
+                recent=self._recent_download_outputs,
+                verify=self._verify_download_outputs,
+                snapshot=self._folder_snapshot,
             )
-            self.log(f"Output folder before download: {self._folder_snapshot(out_path)}")
-            try:
-                ok = self.download_manager.download(
-                    url,
-                    format_id,
-                    outtmpl,
-                    progress_hook=hook,
-                    post_hook=post_hook,
-                    extract_audio=extract_audio,
-                )
-            except CookiesRequiredError as exc:
-                self.log_error("Download", exc.original or exc)
-                if self._prepare_cookie_retry():
-                    try:
-                        ok = self.download_manager.download(
-                            url,
-                            format_id,
-                            outtmpl,
-                            progress_hook=hook,
-                            post_hook=post_hook,
-                            extract_audio=extract_audio,
-                        )
-                    except CookiesRequiredError as retry_exc:
-                        self.log_error("Download", retry_exc.original or retry_exc)
-                        ok = False
-                else:
-                    ok = False
-            if not ok and self.last_error_reason == "format unavailable" and format_id != "best":
-                if self.confirm_format_fallback(extract_audio=extract_audio):
-                    fallback_id = "best"
-                    if extract_audio:
-                        fallback_label = self.format_label_map.get(format_id, "Audio (MP3)")
-                        self.log("Retrying by extracting MP3 from the best available file.")
-                    else:
-                        fallback_label = self.format_label_map.get(fallback_id, "Best (single file)")
-                        self.log(f"Retrying download with {fallback_label} due to unavailable format.")
-                    self.last_selected_format = format_id if extract_audio else fallback_id
-                    self.last_selected_label = fallback_label
-                    if card:
-                        self.set_progress(0)
-                        self.queue_card_progress(card, 0)
-                        self.queue_card_status(card, f"Retrying ({fallback_label})", state="downloading")
-                    try:
-                        ok = self.download_manager.download(
-                            url,
-                            fallback_id,
-                            outtmpl,
-                            progress_hook=hook,
-                            post_hook=post_hook,
-                            extract_audio=extract_audio,
-                        )
-                    except CookiesRequiredError as retry_exc:
-                        self.log_error("Download", retry_exc.original or retry_exc)
-                        ok = False
-                    fmt_label = fallback_label
-            if ok:
-                has_reported_outputs = bool(saved_files)
-                output_files = saved_files or self._recent_download_outputs(out_path, started_at)
-                verified_files = self._verify_download_outputs(output_files)
-                self.log(f"Output folder after download: {self._folder_snapshot(out_path)}")
-                if verified_files:
-                    all_preexisting = True
-                    for output in verified_files:
-                        was_preexisting = output.modified_at < started_at - 1
-                        all_preexisting = all_preexisting and was_preexisting
-                        status = "already existed" if was_preexisting else "saved"
-                        self.log(f"Download {status}: {output.path} ({output.size:,} bytes)")
-                    self.set_progress(1)
-                    if card:
-                        self.queue_card_progress(card, 1)
-                        status = "Already downloaded" if all_preexisting else "Complete"
-                        self.queue_card_status(card, status, state="complete")
-                        self.queue_card_outputs(card, [output.path for output in verified_files])
-                        # Folder recency fallback is legacy UX evidence only. Whisper
-                        # provenance requires one exact path reported by this action.
-                        if (
-                            media_epoch is not None
-                            and has_reported_outputs
-                            and len(verified_files) == 1
-                        ):
-                            self.queue_verified_media(card, verified_files[0], media_epoch)
-                else:
-                    ok = False
-                    self.log(
-                        "Download verification failed: yt-dlp returned success, "
-                        "but Doggybag could not confirm the final file exists."
-                    )
-                    if output_files:
-                        for saved_file in output_files:
-                            self.log(f"Unverified output path: {saved_file}")
-                    else:
-                        self.log("yt-dlp did not report a final output path.")
-                    self.log(f"Output folder snapshot: {self._folder_snapshot(out_path)}")
-            if not ok and card:
-                label = fmt_label or format_id
+            if result.ok:
+                self.set_progress(1)
+                if card:
+                    self.queue_card_progress(card, 1)
+                    status = "Already downloaded" if result.already_existed else "Complete"
+                    self.queue_card_status(card, status, state="complete")
+                    self.queue_card_outputs(card, [output.path for output in result.outputs])
+                    # Folder recency fallback is legacy UX evidence only. Whisper
+                    # provenance requires one exact path reported by this action.
+                    if media_epoch is not None and result.exact and len(result.outputs) == 1:
+                        self.queue_verified_media(card, result.outputs[0], media_epoch)
+            elif card:
+                label = result.fmt_label or format_id
                 self.queue_card_status(card, f"Failed ({label})", state="failed")
         finally:
             if card:
                 self.queue_card_busy(card, False)
-        return bool(ok)
+        return bool(result is not None and result.ok)
 
     def _recent_transcript_outputs(self, folder: str, started_at: float) -> list[str]:
         try:
@@ -2790,140 +2648,42 @@ class AppController:
             return []
 
     def _recent_download_outputs(self, folder: str, started_at: float) -> list[str]:
-        ignored_suffixes = (
-            ".part",
-            ".ytdl",
-            ".temp",
-            ".tmp",
-            ".f136.mp4",
-            ".f251.webm",
-        )
-        try:
-            candidates = []
-            for entry in Path(folder).iterdir():
-                if not entry.is_file():
-                    continue
-                name = entry.name.lower()
-                if any(name.endswith(suffix) for suffix in ignored_suffixes):
-                    continue
-                stat = entry.stat()
-                if stat.st_mtime >= started_at - 1:
-                    candidates.append((stat.st_mtime, str(entry)))
-            return [path for _mtime, path in sorted(candidates)]
-        except Exception:
-            return []
+        return recent_outputs(folder, started_at)
 
     def _verify_download_outputs(self, paths: list[str]) -> list[VerifiedMedia]:
-        verified = []
-        seen = set()
-        for path in paths:
-            if not path or path in seen:
-                continue
-            seen.add(path)
-            try:
-                file_path = Path(path)
-                exists = file_path.exists()
-                is_file = file_path.is_file()
-                parent = file_path.parent
-                parent_exists = parent.exists()
-                resolved = file_path.resolve(strict=False)
-                stat = file_path.stat() if is_file else None
-                size = stat.st_size if stat else None
-                self.log(
-                    "Verify output: "
-                    f"path={file_path} resolved={resolved} exists={exists} "
-                    f"is_file={is_file} size={size if size is not None else 'n/a'} "
-                    f"parent_exists={parent_exists}"
-                )
-                if is_file and size and size > 0:
-                    verified.append(
-                        VerifiedMedia(
-                            path=file_path,
-                            size=size,
-                            modified_at=stat.st_mtime,
-                        )
-                    )
-            except Exception as exc:
-                self.log(f"Verify output error for {path}: {type(exc).__name__}: {exc}")
-                continue
-        return verified
+        return verify_outputs(paths, log=self.log)
 
     def _folder_snapshot(self, folder: str, limit: int = 10) -> str:
-        try:
-            entries = []
-            for entry in Path(folder).iterdir():
-                if not entry.is_file():
-                    continue
-                stat = entry.stat()
-                timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
-                entries.append((stat.st_mtime, f"{entry.name} ({stat.st_size:,} bytes, {timestamp})"))
-            if not entries:
-                return "no files"
-            newest = [description for _mtime, description in sorted(entries, reverse=True)[:limit]]
-            return "; ".join(newest)
-        except Exception as exc:
-            return f"unavailable ({type(exc).__name__}: {exc})"
+        return folder_snapshot(folder, limit)
 
     def download_transcript(self, url, out_path, card=None, selected_transcript=None):
-        outtmpl = os.path.join(out_path, '%(title)s.transcript.%(ext)s')
-        success = False
-        started_at = time.time()
-
-        def mark_success(result):
-            nonlocal success
-            success = True
-            self.last_transcript_source = result.source
-            self.last_transcript_languages = list(result.languages)
-            self.set_progress(1)
-            if card:
-                self.queue_card_progress(card, 1)
-                self.queue_card_status(card, f"Transcript saved ({result.source})", state="complete")
-                self.queue_card_outputs(card, self._recent_transcript_outputs(out_path, started_at))
-            languages = ", ".join(result.languages[:5])
-            if len(result.languages) > 5:
-                languages += ", ..."
-            detail = f" [{languages}]" if languages else ""
-            self.log(f"Transcript download complete ({result.source}){detail}")
-
+        outcome = None
         try:
-            result = self.download_manager.download_transcript(url, outtmpl, selected_track=selected_transcript)
-            mark_success(result)
-        except CookiesRequiredError as exc:
-            self.log_error("Transcript", exc.original or exc)
-            if self._prepare_cookie_retry():
-                try:
-                    result = self.download_manager.download_transcript(
-                        url,
-                        outtmpl,
-                        selected_track=selected_transcript,
-                    )
-                    mark_success(result)
-                except CookiesRequiredError as retry_exc:
-                    self.log_error("Transcript", retry_exc.original or retry_exc)
-                    if card:
-                        self.queue_card_status(card, "Transcript failed", state="failed")
-                except NoTranscriptAvailableError as retry_exc:
-                    self.log_error("Transcript", retry_exc)
-                    if card:
-                        self.queue_card_status(card, "Transcript unavailable", state="failed")
-                except Exception as retry_exc:
-                    self.log_error("Transcript", retry_exc)
-                    if card:
-                        self.queue_card_status(card, "Transcript failed", state="failed")
+            outcome = download_provider_transcript(
+                self.download_manager,
+                url,
+                out_path,
+                prompter=_ControllerPrompter(self),
+                log=self.log,
+                log_error=self.log_error,
+                track=selected_transcript,
+                recent_transcripts=self._recent_transcript_outputs,
+            )
+            if outcome.ok:
+                self.last_transcript_source = outcome.source
+                self.last_transcript_languages = list(outcome.languages)
+                self.set_progress(1)
+                if card:
+                    self.queue_card_progress(card, 1)
+                    self.queue_card_status(card, f"Transcript saved ({outcome.source})", state="complete")
+                    self.queue_card_outputs(card, outcome.paths)
             elif card:
-                self.queue_card_status(card, "Transcript failed", state="failed")
-        except NoTranscriptAvailableError as exc:
-            self.log_error("Transcript", exc)
-            if card:
-                self.queue_card_status(card, "Transcript unavailable", state="failed")
-        except Exception as exc:
-            self.log_error("Transcript", exc)
-            if card:
-                self.queue_card_status(card, "Transcript failed", state="failed")
+                status = "Transcript unavailable" if outcome.status == "unavailable" else "Transcript failed"
+                self.queue_card_status(card, status, state="failed")
         finally:
             if card:
                 self.queue_card_busy(card, False)
-        return success
+        return bool(outcome is not None and outcome.ok)
 
     def on_close(self):
         run = self.batch_run
@@ -2964,31 +2724,11 @@ class AppController:
             return None, None
         return username, password
 
-    def selenium_fallback(self, page_url, username=None, password=None):
-        if not username or not password:
-            self.log("Selenium fallback skipped: no credentials provided.")
-            return []
-        login_plan = resolve_login_plan(page_url, self.dev_defaults)
-        entries = selenium_fetch_media_entries(page_url, username, password, login_plan=login_plan, log=self.log)
-        if entries:
-            return entries
-        self.log("Selenium fallback error: failed to find media URLs after login")
-        return []
-
     # ──────────────────────────────────────────────────────────
     # Config load
     # ──────────────────────────────────────────────────────────
     def load_dev_defaults(self):
-        from ..core.runtime import resolve_developer_json
-
-        path = resolve_developer_json()
-        if path is None:
-            return {}
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return {}
+        return load_dev_defaults()
 
 
 __all__ = ["AppController", "BatchItem", "BatchPromptPolicy", "BatchRun", "entry_details", "site_label"]

@@ -21,6 +21,8 @@ def classify_error(err_text: str) -> tuple[str, str]:
         return "format unavailable", " (Hint: re-fetch formats or try Best (single file).)"
     if any(token in msg for token in ("only images are available", "no video formats")):
         return "format unavailable", " (Hint: install EJS scripts or re-fetch formats.)"
+    if "download stalled" in msg:
+        return "media stall/player client", " (Hint: YouTube throttled this client; retried other player clients.)"
     if any(token in msg for token in ("no transcript", "no subtitles", "no caption", "no captions")):
         return "no transcript", " (Hint: this video may not expose transcript/caption tracks.)"
     if any(token in msg for token in ("ffmpeg", "ffprobe", "avconv", "merge", "mux")):

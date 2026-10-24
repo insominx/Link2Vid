@@ -26,6 +26,7 @@ Stable, public engineering docs under `docs/` that describe product behavior or 
 
 ## Where to read project context
 
+- [docs/headless-usage.md](docs/headless-usage.md) — headless CLI for agents: commands, JSON contract, exit codes. Agents in other projects should use `doggybag.bat` / `video_downloader.py <command>`, not `doggybag.core` internals.
 - [README.md](README.md) — setup, usage, `developer.json` notes
 - [docs/INDEX.md](docs/INDEX.md) — doc map
 - [docs/architecture.md](docs/architecture.md) — current module layout and fetch/download flow

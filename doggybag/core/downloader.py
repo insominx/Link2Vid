@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import Callable
 
 from .cookie_prefs import normalize_cookies_browser
-from .errors import CookiesRequiredError, NoTranscriptAvailableError
+from .errors import CookiesRequiredError, DownloadStalledError, NoTranscriptAvailableError
 from .helpers import AUDIO_EXTRACT_FORMAT, audio_extract_format_selector, audio_extract_postprocessors
 import sys
 import subprocess
 import re
 import shutil
+import time
 from urllib.parse import urlparse
 import yt_dlp
 
@@ -19,6 +21,50 @@ import yt_dlp
 # and answers every later range with 403. These clients have been observed to
 # still serve whole files in that state; they are tried in order after a 403.
 YOUTUBE_PLAYER_CLIENT_FALLBACKS = ("web_embedded", "tv_embedded", "mweb")
+
+# The same throttling sometimes shows up as a crawl (tens of KiB/s) instead of a
+# 403. A YouTube download that stays below this rate for a whole window, with a
+# long way still to go, is treated like a media 403 and retried on other clients.
+STALL_GRACE_SECONDS = 15
+STALL_WINDOW_SECONDS = 30
+STALL_MIN_BYTES_PER_SECOND = 64 * 1024
+STALL_MIN_REMAINING_SECONDS = 120
+
+
+class _StallWatch:
+    """Progress hook that raises ``DownloadStalledError`` when a download crawls."""
+
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
+        self.clock = clock
+        self.samples: dict[str, deque] = {}
+        self.started: dict[str, float] = {}
+
+    def __call__(self, d: dict) -> None:
+        if d.get("status") != "downloading":
+            return
+        downloaded = d.get("downloaded_bytes")
+        if not isinstance(downloaded, (int, float)):
+            return
+        key = str(d.get("tmpfilename") or d.get("filename") or "")
+        now = self.clock()
+        started = self.started.setdefault(key, now)
+        samples = self.samples.setdefault(key, deque())
+        samples.append((now, float(downloaded)))
+        while samples and now - samples[0][0] > STALL_WINDOW_SECONDS:
+            samples.popleft()
+        if now - started < STALL_GRACE_SECONDS + STALL_WINDOW_SECONDS:
+            return
+        span = now - samples[0][0]
+        if span < STALL_WINDOW_SECONDS / 2:
+            return
+        rate = (samples[-1][1] - samples[0][1]) / span
+        if rate >= STALL_MIN_BYTES_PER_SECOND:
+            return
+        total = d.get("total_bytes") or d.get("total_bytes_estimate")
+        if isinstance(total, (int, float)) and total > 0 and rate > 0:
+            if (total - downloaded) / rate < STALL_MIN_REMAINING_SECONDS:
+                return
+        raise DownloadStalledError(rate=rate, window=span)
 
 
 @dataclass
@@ -64,6 +110,7 @@ class DownloadManager:
         self.last_js_runtime = None
         self.last_js_runtime_path = None
         self.last_remote_components = []
+        self._clock = time.monotonic
 
     def _preferred_browser(self) -> str | None:
         return normalize_cookies_browser(self.get_cookies_browser())
@@ -172,6 +219,17 @@ class DownloadManager:
     def _is_media_forbidden(self, err: Exception) -> bool:
         message = str(err).lower()
         return "403" in message or "forbidden" in message
+
+    def _is_media_stall(self, err: Exception) -> bool:
+        seen = set()
+        current: BaseException | None = err
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if isinstance(current, DownloadStalledError):
+                return True
+            current = current.__cause__ or current.__context__
+        message = str(err).lower()
+        return any(token in message for token in ("download stalled", "timed out", "timeout"))
 
     def _is_youtube(self, url: str) -> bool:
         host = (urlparse(url).netloc or "").lower()
@@ -470,9 +528,18 @@ class DownloadManager:
 
         raise NoTranscriptAvailableError("No transcript/subtitles available for this video.")
 
-    def get_video_info(self, url: str, username: str | None = None, password: str | None = None):
+    def get_video_info(
+        self,
+        url: str,
+        username: str | None = None,
+        password: str | None = None,
+        *,
+        flat: bool = False,
+    ):
         self._reset_cookie_state()
         ydl_opts = {"quiet": True, "skip_download": True, "logger": self.ydl_logger}
+        if flat:
+            ydl_opts["extract_flat"] = "in_playlist"
         if username and password:
             ydl_opts["username"] = username
             ydl_opts["password"] = password
@@ -506,8 +573,16 @@ class DownloadManager:
         progress_hook: Callable | None = None,
         post_hook: Callable[[str], None] | None = None,
         extract_audio: bool = False,
+        *,
+        raise_errors: bool = False,
     ) -> bool:
+        """Download ``url`` with yt-dlp; ``out_path`` is an outtmpl.
+
+        By default a final non-cookie failure goes to ``log_error`` and returns
+        False. ``raise_errors=True`` raises it instead so callers can classify it.
+        """
         self._reset_cookie_state()
+        self.last_player_client = None
         resolved_format = format_id
         if extract_audio and format_id == AUDIO_EXTRACT_FORMAT:
             resolved_format = audio_extract_format_selector()
@@ -525,7 +600,15 @@ class DownloadManager:
         self._apply_cookies(opts)
         self._apply_js_runtime_opts(opts)
 
-        def download_with(retry_opts: dict):
+        guard_stalls = self._is_youtube(url)
+
+        def download_with(retry_opts: dict, *, watch_stalls: bool = True):
+            if guard_stalls and watch_stalls:
+                retry_opts = dict(retry_opts)
+                retry_opts["progress_hooks"] = [
+                    *(retry_opts.get("progress_hooks") or []),
+                    _StallWatch(clock=self._clock),
+                ]
             with yt_dlp.YoutubeDL(retry_opts) as ydl:
                 ydl.download([url])
             return True
@@ -545,19 +628,25 @@ class DownloadManager:
                 self.log(f"[yt-dlp] Muxed audio extract failed: {self._format_exception(muxed_err)}")
                 return False
 
-        def retry_media_forbidden(err: Exception) -> bool:
-            """Retry a media-stream 403 against alternative YouTube player clients.
+        def retry_player_clients(err: Exception) -> bool:
+            """Retry a media-stream 403 or stall against alternative YouTube player clients.
 
             YouTube serves only the first ~1 MiB of a format URL to clients it
-            considers unverified, then answers every further range with 403. The
-            default client can hit this while an embedded client still serves the
-            whole file, so walk the alternatives before giving up. Resume is
-            disabled because a stale .part would range-request a newly signed URL.
+            considers unverified, then answers every further range with 403 (or
+            throttles it to a crawl). The default client can hit this while an
+            embedded client still serves the whole file, so walk the alternatives
+            before giving up. Resume is disabled because a stale .part would
+            range-request a newly signed URL.
             """
-            if not self._is_media_forbidden(err) or not self._is_youtube(url):
+            if not self._is_youtube(url):
                 return False
+            stalled = self._is_media_stall(err)
+            if not (stalled or self._is_media_forbidden(err)):
+                return False
+            reason = "Download stalled" if stalled else "Media 403"
+            any_stalled = stalled
             for client in YOUTUBE_PLAYER_CLIENT_FALLBACKS:
-                self.log(f"[yt-dlp] Media 403; retrying with YouTube player client '{client}'…")
+                self.log(f"[yt-dlp] {reason}; retrying with YouTube player client '{client}'…")
                 retry_opts = self._with_player_client(opts, client)
                 retry_opts["continuedl"] = False
                 try:
@@ -566,16 +655,30 @@ class DownloadManager:
                         self.log(f"[yt-dlp] Player client '{client}' succeeded.")
                         return True
                 except Exception as retry_err:
+                    any_stalled = any_stalled or self._is_media_stall(retry_err)
                     self.log(
                         f"[yt-dlp] Player client '{client}' failed: {self._format_exception(retry_err)}"
                     )
+            if any_stalled:
+                # Every client crawled: the connection may just be slow. Finish
+                # the download unguarded rather than fail where it used to succeed.
+                self.log("[yt-dlp] All player clients were slow; retrying slow but steady without the stall guard…")
+                retry_opts = dict(opts)
+                retry_opts["continuedl"] = False
+                return download_with(retry_opts, watch_stalls=False)
             return False
 
         try:
             return download_with(opts)
         except Exception as first_err:
-            if self._is_media_forbidden(first_err) and retry_media_forbidden(first_err):
-                return True
+            try:
+                if retry_player_clients(first_err):
+                    return True
+            except Exception as unguarded_err:
+                if raise_errors:
+                    raise
+                self.log_error("Download", unguarded_err)
+                return False
             if self._should_try_browser_cookies(url, first_err):
                 try:
                     return self._retry_with_browser_cookies(url, opts, first_err, download_with)
@@ -585,6 +688,8 @@ class DownloadManager:
                     raise
             if retry_audio_from_muxed(first_err):
                 return True
+            if raise_errors:
+                raise first_err
             self.log_error("Download", first_err)
             return False
 

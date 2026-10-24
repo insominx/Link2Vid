@@ -297,18 +297,25 @@ def download_with_ffmpeg(
     )
     output_lines: list[str] = []
     last_fraction = 0.0
-    for line in proc.stdout:
-        output_lines.append(line)
-        elapsed_seconds = parse_ffmpeg_progress_ms(line)
-        if elapsed_seconds is None:
-            elapsed_seconds = parse_ffmpeg_time_seconds(line)
-        if elapsed_seconds is not None:
-            last_fraction = _emit_progress(
-                progress_hook,
-                elapsed_seconds=elapsed_seconds,
-                duration_seconds=duration_seconds,
-                last_fraction=last_fraction,
-            )
+    try:
+        for line in proc.stdout:
+            output_lines.append(line)
+            elapsed_seconds = parse_ffmpeg_progress_ms(line)
+            if elapsed_seconds is None:
+                elapsed_seconds = parse_ffmpeg_time_seconds(line)
+            if elapsed_seconds is not None:
+                last_fraction = _emit_progress(
+                    progress_hook,
+                    elapsed_seconds=elapsed_seconds,
+                    duration_seconds=duration_seconds,
+                    last_fraction=last_fraction,
+                )
+    except BaseException:
+        # CREATE_NO_WINDOW detaches ffmpeg from the console, so Ctrl+C never
+        # reaches it; kill it explicitly instead of leaving it running.
+        proc.kill()
+        proc.wait()
+        raise
     proc.wait()
     if proc.returncode != 0:
         tail = "".join(output_lines[-20:]).strip()

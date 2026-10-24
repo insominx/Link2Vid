@@ -11,9 +11,11 @@ Current layout and data flow for the desktop app. For media discovery details (S
 
 ## Entry point
 
-- `video_downloader.py` — `main()` parses `--smoke` / `--devtools`, calls `bootstrap_runtime()`, then lazy-imports `doggybag.ui.webview_app.run` or runs headless import smoke.
+- `video_downloader.py` — `main()` routes `info|download|transcript|transcribe|doctor|schema` to `doggybag.cli` (after `bootstrap_runtime()`, before the GUI parser); otherwise parses `--smoke` / `--devtools`, calls `bootstrap_runtime()`, then lazy-imports `doggybag.ui.webview_app.run` or runs headless import smoke.
+- `doggybag/cli/` — headless, agent-first CLI ([headless-usage.md](./headless-usage.md)): `main.py` (parser, `schema`, result envelope, exit codes), `commands.py`, `session.py` (`FlagPrompter` answers workflow questions from flags and never prompts), `output.py` (error codes, entry projection, reporter). Never imports `doggybag.ui` or the controller.
 - `doggybag/core/runtime.py` — frozen/dev `app_dir`, `developer.json` search order, optional `<app_dir>/bin` PATH prepend (entry-only; not imported from other core modules).
-- `doggybag/app/controller.py` — `AppController`: fetch/download/transcript/Whisper/batch orchestration, dialogs, diagnostics, the `ui_queue` dispatcher.
+- `doggybag/app/workflow.py` — synchronous, view-free decisions shared by the GUI and the CLI: `resolve_fetch` (cookie/login/HLS/Selenium routing), `download_media` (cookie retry, format fallback, output verification), `download_direct`, `download_provider_transcript`, `resolve_merge_format`. Questions go through a `Prompter`.
+- `doggybag/app/controller.py` — `AppController`: threads, cards, batches, Whisper, dialogs, diagnostics and the `ui_queue` dispatcher; delegates the decisions above to `workflow.py` with a `_ControllerPrompter` that wraps its dialogs and batch prompt policy.
 - `doggybag/app/viewmodels.py` — `CardModel`, `BatchBarModel`, `FooterModel`, `UrlModel`, `LogModel`: state objects that replaced the old widgets and publish events.
 - `doggybag/app/view.py` — `ViewPort` protocol (events, dialogs, toasts, clipboard, file pickers) and a headless `NullView`.
 - `doggybag/app/desktop.py` — clipboard text, open/reveal files.
@@ -36,6 +38,7 @@ Windows portable builds: `build_windows.bat` → `release/Doggybag/`; launch via
 | `doggybag/core/gdcvault.py` | GDC Vault talks → Blazestreaming HLS entry; HTTP login only for members-only pages |
 | `doggybag/core/selenium_fallback.py` | Browser login, `discover_media_urls`, `collapse_selenium_media_candidates`, `selenium_fetch_media_entries` |
 | `doggybag/core/helpers.py` | URL normalization, filename sanitization, FFmpeg helper, format options |
+| `doggybag/core/media_tools.py` | Section time ranges, local ffmpeg clip cuts, ffprobe media facts (CLI) |
 | `doggybag/core/diagnostics.py` | `build_diagnostics` for Copy Diagnostics |
 | `doggybag/core/error_classification.py` | Error reason codes and user guidance |
 | `doggybag/core/dev_defaults.py` | Optional local `developer.json` credentials per domain |
@@ -69,6 +72,7 @@ Per card, user picks a format (Best A+V / Best video / Audio MP3) or Transcript.
 - **yt-dlp path** — standard sites, playlists; `DownloadManager` with progress hooks. **Audio (MP3)** adds an `FFmpegExtractAudio` postprocessor (`extract_audio=True`); Whisper temporary `bestaudio` downloads leave this off.
 - **Direct media path** — entries with `_ffmpeg_headers` use `download_with_ffmpeg`; **Audio (MP3)** writes `.mp3` with `-vn` instead of copying video. Progress uses `ffmpeg_progress_display` for coherent elapsed/total display. On Windows, ffmpeg/ffprobe subprocesses launch with `CREATE_NO_WINDOW` so a closable console cannot abort an in-flight download.
 - **Transcript path** — caption/subtitle files only; no media mux.
+- **YouTube player-client fallback** — a media 403, or a download that crawls below 64 KiB/s for 30 s (`_StallWatch` progress hook raising `DownloadStalledError`), is retried on `web_embedded`, `tv_embedded`, then `mweb`. If every client crawls, one last attempt runs without the stall guard so slow connections still finish.
 
 Output names use `sanitize_filename` + `unique_output_path` (collision suffix, no silent overwrite).
 

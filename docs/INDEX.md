@@ -10,6 +10,7 @@ Stable docs for Doggybag. Ephemeral agent notes belong in `docs/scratch/` (local
 | [../AGENTS.md](../AGENTS.md) | Agents | Repo rules, what not to commit, validation commands |
 | [architecture.md](./architecture.md) | Engineers | Current module layout and fetch/download flow |
 | [ui-frontend.md](./ui-frontend.md) | Engineers | Web frontend, Python↔page event protocol, design tokens, mock backend |
+| [headless-usage.md](./headless-usage.md) | Agents, scripts | Headless CLI: commands, JSON result, exit and error codes |
 
 ## Operations
 

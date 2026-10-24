@@ -101,6 +101,8 @@ This produces a self-contained folder at `release\Doggybag\`, with ffmpeg bundle
 4. **Transcript** opens a panel where you can save the site's captions or transcribe locally with Whisper.
 5. **Playlists:** use the checkboxes, then **Download N** or **Save captions** in the header. Batches run one item at a time, and **Stop** finishes the current item and skips the rest.
 
+**From the command line (agents and scripts):** `doggybag.bat download <url>` downloads at the best quality into the current folder and prints a JSON result; `doggybag.bat schema` describes every command. See [docs/headless-usage.md](docs/headless-usage.md).
+
 The bottom bar holds your **download folder** (click to change it) and the **Cookies** source. A site that wants you signed in can borrow cookies from Brave, Chrome, Edge, or Firefox, or from a `cookies.txt` export.
 
 | Shortcut | Action |

@@ -44,6 +44,12 @@ PYTHON310_IMPORT_TARGETS = (
     ROOT / "doggybag" / "core" / "runtime.py",
     ROOT / "doggybag" / "core" / "diagnostics.py",
     ROOT / "doggybag" / "app" / "viewmodels.py",
+    ROOT / "doggybag" / "app" / "workflow.py",
+    ROOT / "doggybag" / "core" / "media_tools.py",
+    ROOT / "doggybag" / "cli" / "main.py",
+    ROOT / "doggybag" / "cli" / "commands.py",
+    ROOT / "doggybag" / "cli" / "output.py",
+    ROOT / "doggybag" / "cli" / "session.py",
 )
 
 PYTHON310_GRAMMAR_TARGETS = (
@@ -57,6 +63,13 @@ PYTHON310_GRAMMAR_TARGETS = (
     ROOT / "doggybag" / "app" / "viewmodels.py",
     ROOT / "doggybag" / "app" / "desktop.py",
     ROOT / "doggybag" / "ui" / "webview_app.py",
+    ROOT / "doggybag" / "app" / "workflow.py",
+    ROOT / "doggybag" / "core" / "media_tools.py",
+    ROOT / "doggybag" / "cli" / "main.py",
+    ROOT / "doggybag" / "cli" / "commands.py",
+    ROOT / "doggybag" / "cli" / "output.py",
+    ROOT / "doggybag" / "cli" / "session.py",
+    ROOT / "doggybag" / "cli" / "__init__.py",
 )
 
 PYTHON310_IMPORT_MODULES = (
@@ -69,6 +82,10 @@ PYTHON310_IMPORT_MODULES = (
     "doggybag.app.controller",
     "doggybag.app.viewmodels",
     "doggybag.ui.webview_app",
+    "doggybag.app.workflow",
+    "doggybag.core.media_tools",
+    "doggybag.cli",
+    "doggybag.cli.main",
 )
 
 

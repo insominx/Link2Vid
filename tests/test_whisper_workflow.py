@@ -418,8 +418,8 @@ class TestVerifiedMediaAssociation(_AppHarness):
         def fake_ffmpeg(media_url, output_file, headers, progress_hook=None, duration_seconds=None, **_kwargs):
             Path(output_file).write_bytes(b"hls-bytes")
 
-        with mock.patch("doggybag.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
-            with mock.patch("doggybag.app.controller.unique_output_path", return_value=str(outfile)):
+        with mock.patch("doggybag.app.workflow.download_with_ffmpeg", side_effect=fake_ffmpeg):
+            with mock.patch("doggybag.app.workflow.unique_output_path", return_value=str(outfile)):
                 with mock.patch("threading.Thread") as thread_cls:
                     started = []
 
@@ -454,7 +454,7 @@ class TestVerifiedMediaAssociation(_AppHarness):
             seen["audio_only"] = kwargs.get("audio_only")
             Path(output_file).write_bytes(b"mp3-bytes")
 
-        with mock.patch("doggybag.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
+        with mock.patch("doggybag.app.workflow.download_with_ffmpeg", side_effect=fake_ffmpeg):
             with mock.patch("threading.Thread") as thread_cls:
                 def capture_thread(target=None, daemon=None):
                     return mock.Mock(start=lambda: target())
@@ -485,8 +485,8 @@ class TestVerifiedMediaAssociation(_AppHarness):
         def fake_ffmpeg(media_url, output_file, headers, progress_hook=None, duration_seconds=None, **_kwargs):
             return None
 
-        with mock.patch("doggybag.app.controller.download_with_ffmpeg", side_effect=fake_ffmpeg):
-            with mock.patch("doggybag.app.controller.unique_output_path", return_value=str(outfile)):
+        with mock.patch("doggybag.app.workflow.download_with_ffmpeg", side_effect=fake_ffmpeg):
+            with mock.patch("doggybag.app.workflow.unique_output_path", return_value=str(outfile)):
                 with mock.patch("threading.Thread") as thread_cls:
                     def run_inline(target=None, daemon=None):
                         return mock.Mock(start=lambda: target())

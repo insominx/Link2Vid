@@ -51,9 +51,29 @@ def _run_smoke():
     return 0
 
 
+CLI_COMMANDS = ("info", "download", "transcript", "transcribe", "doctor", "schema")
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    parser = argparse.ArgumentParser(description="Doggybag")
+    if argv and argv[0] in CLI_COMMANDS:
+        # Headless CLI. bootstrap_runtime() resolves bin/ from sys.argv[0], so the
+        # dispatch stays in this file; returning here skips the GUI and os._exit.
+        from doggybag.core.runtime import bootstrap_runtime
+
+        bootstrap_runtime()
+        from doggybag.cli import run_cli
+
+        return run_cli(list(argv))
+
+    parser = argparse.ArgumentParser(
+        description="Doggybag",
+        epilog=(
+            "Headless commands for agents and scripts: "
+            + ", ".join(CLI_COMMANDS)
+            + ". Run `video_downloader.py schema` or see docs/headless-usage.md."
+        ),
+    )
     parser.add_argument(
         "--smoke",
         action="store_true",

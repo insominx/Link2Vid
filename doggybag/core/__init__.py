@@ -7,7 +7,7 @@ from .diagnostics import (
     sanitize_whisper_diagnostic_scalar,
     sanitize_whisper_error_reason,
 )
-from .errors import CookiesRequiredError, NoTranscriptAvailableError
+from .errors import CookiesRequiredError, DownloadStalledError, NoTranscriptAvailableError
 from .error_classification import classify_error, get_error_guidance
 from .extractors import extract_embedded_page_videos, scan_direct_m3u8, scan_direct_media_entries, build_media_entries
 from .udio import extract_udio_entries, is_udio_url, udio_song_id_from_url
@@ -60,6 +60,7 @@ from .whisper_transcription import (
 __all__ = [
     "DownloadManager",
     "CookiesRequiredError",
+    "DownloadStalledError",
     "NoTranscriptAvailableError",
     "WhisperDiagnosticsInput",
     "build_diagnostics",

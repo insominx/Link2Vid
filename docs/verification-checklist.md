@@ -93,6 +93,21 @@ Copy Diagnostics includes at minimum:
 - **Direct HLS** — m3u8 detected; FFmpeg download succeeds.
 - **Selenium fallback** — UI stays responsive while browser automation runs off the dispatcher thread.
 
+## Headless CLI
+
+Run from a scratch folder with `doggybag.bat` (see [headless-usage.md](./headless-usage.md)); check `%ERRORLEVEL%` after each.
+
+- `doctor --text` and `schema` succeed (exit 0).
+- `info <public video>` lists formats, chapters and caption tracks; the output has no `Cookie` or `http_headers`.
+- `download <public video> --section 0:10-0:25` writes a 15 s clip with ffprobe facts and leaves no `.doggybag-section-*` folder.
+- `download <video> --format 999` succeeds with a `format_fallback` warning; with `--format-fallback fail` it exits 4.
+- `download <channel>/videos --flat` without `--items` exits 4 (`items_required`); `--items 1` works.
+- `transcript <video> --list`, then `--lang en` saves real subtitles when the site has them.
+- `transcribe <clip> --model tiny` writes `.txt` and `.srt` without downloading; a URL leaves no `doggybag-whisper-audio-*` folder.
+- `--stream`: every stdout line parses as JSON and the last is `result`.
+- Ctrl+C during a direct-HLS download exits 130 and leaves no `ffmpeg` process.
+- `settings.json` and `~/Downloads/doggybag-debug.log` are unchanged by CLI runs.
+
 ## Packaged build (Windows exe)
 
 After `build_windows.bat`, the `release/Doggybag/` folder opens automatically. Start via `Doggybag.bat` (smoke also runs during build). Optional: `packaging\smoke_frozen.bat`. Then spot-check using the scenarios above. See [windows-packaging.md](./windows-packaging.md) for layout.
